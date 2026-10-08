@@ -1,0 +1,89 @@
+services:
+  app:
+    build: .
+    environment:
+      DB_PATH: /app/data/studypilot.db
+      OTEL_ENABLED: "true"
+      OTEL_SERVICE_NAME: studypilot
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      LOG_PATH: /var/log/studypilot/studypilot.jsonl
+    ports:
+      - "127.0.0.1:18080:8000"
+    volumes:
+      - studypilot-data:/app/data
+      - app-logs:/var/log/studypilot
+    depends_on:
+      - otel-collector
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.123.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "127.0.0.1:14317:4317"
+      - "127.0.0.1:14318:4318"
+    depends_on:
+      - jaeger
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus"]
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:19090:9090"
+    depends_on:
+      - otel-collector
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-change-me-local}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:13000:3000"
+    depends_on:
+      - prometheus
+      - loki
+      - jaeger
+
+  loki:
+    image: grafana/loki:3.4.2
+    command: ["-config.file=/etc/loki/config.yml"]
+    volumes:
+      - ./observability/loki.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    ports:
+      - "127.0.0.1:13100:3100"
+
+  promtail:
+    image: grafana/promtail:3.4.2
+    command: ["-config.file=/etc/promtail/config.yml"]
+    volumes:
+      - ./observability/promtail.yml:/etc/promtail/config.yml:ro
+      - app-logs:/var/log/studypilot:ro
+      - promtail-data:/tmp
+    depends_on:
+      - loki
+
+  jaeger:
+    image: jaegertracing/jaeger:2.4.0
+    ports:
+      - "127.0.0.1:16687:16686"
+      - "127.0.0.1:14319:4317"
+      - "127.0.0.1:14320:4318"
+
+volumes:
+  app-logs:
+  grafana-data:
+  loki-data:
+  prometheus-data:
+  promtail-data:
+  studypilot-data:

@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: StudyPilot
+    orgId: 1
+    folder: StudyPilot
+    type: file
+    disableDeletion: true
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

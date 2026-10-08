@@ -1,0 +1,59 @@
+name: StudyPilot CI and Dokku deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, dokku]
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure SSH for the Dokku app
+        shell: bash
+        env:
+          DOKKU_HOST: ${{ secrets.DOKKU_HOST }}
+          DOKKU_SSH_PRIVATE_KEY: ${{ secrets.DOKKU_SSH_PRIVATE_KEY }}
+          DOKKU_KNOWN_HOSTS: ${{ secrets.DOKKU_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DOKKU_HOST"
+          test -n "$DOKKU_SSH_PRIVATE_KEY"
+          test -n "$DOKKU_KNOWN_HOSTS"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DOKKU_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$DOKKU_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "dokku@$DOKKU_HOST" version
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "dokku@$DOKKU_HOST" git:set studypilot deploy-branch main
+      - name: Deploy the separate StudyPilot Dokku app
+        shell: bash
+        env:
+          DOKKU_HOST: ${{ secrets.DOKKU_HOST }}
+        run: |
+          set -euo pipefail
+          git remote add dokku "dokku@$DOKKU_HOST:studypilot"
+          git push dokku HEAD:main

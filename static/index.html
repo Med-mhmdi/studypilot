@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f7fb">
+  <title>StudyPilot — Assignment planner</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/"><span class="brand-mark">S</span><span>StudyPilot</span></a>
+      <span class="local-label"><span class="live-dot"></span> Your study dashboard</span>
+    </header>
+
+    <section class="intro">
+      <div><p class="eyebrow">STAY AHEAD OF THE DEADLINE</p><h1>Make room for<br><span>your best work.</span></h1>
+      <p class="intro-copy">One clear view of what’s due, what’s next, and what you’ve finished.</p></div>
+      <div class="intro-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="paper"><span>✦</span><i></i><i></i><i></i></div><div class="sparkle sparkle-a">✦</div><div class="sparkle sparkle-b">·</div></div>
+    </section>
+
+    <section class="stats" aria-label="Assignment summary">
+      <article class="stat-card"><span class="stat-icon lilac">◷</span><div><span class="stat-label">UP NEXT</span><strong id="up-next">—</strong></div></article>
+      <article class="stat-card"><span class="stat-icon peach">↗</span><div><span class="stat-label">IN PROGRESS</span><strong id="in-progress">0</strong></div></article>
+      <article class="stat-card"><span class="stat-icon mint">✓</span><div><span class="stat-label">COMPLETED</span><strong id="completed">0</strong></div></article>
+    </section>
+
+    <section class="workspace">
+      <div class="section-head"><div><p class="eyebrow">YOUR WORKLOAD</p><h2>Assignments</h2></div><button class="primary-button" id="new-task"><span>＋</span> New assignment</button></div>
+      <div class="toolbar"><div class="filters" role="group" aria-label="Filter assignments"><button class="filter active" data-filter="all">All <span id="count-all">0</span></button><button class="filter" data-filter="todo">To do</button><button class="filter" data-filter="in_progress">In progress</button><button class="filter" data-filter="done">Done</button></div><label class="course-filter"><span>Course</span><select id="course-filter"><option value="">All courses</option></select></label></div>
+      <div id="task-list" class="task-list" aria-live="polite"></div>
+      <div id="empty-state" class="empty-state"><div class="empty-check">✦</div><h3>A fresh page</h3><p>Add your next assignment and we’ll help you keep it in view.</p><button class="text-button" id="empty-add">＋ Add an assignment</button></div>
+    </section>
+    <footer><span>Small steps count.</span><span>StudyPilot · MVP</span></footer>
+  </main>
+
+  <dialog id="task-dialog">
+    <form id="task-form">
+      <div class="dialog-head"><div><p class="eyebrow">PLAN YOUR NEXT STEP</p><h2 id="dialog-title">New assignment</h2></div><button type="button" class="icon-button" id="close-dialog" aria-label="Close">×</button></div>
+      <input type="hidden" id="task-id">
+      <label class="field">Assignment title<input id="title" name="title" maxlength="160" required placeholder="e.g. Containerize the API"></label>
+      <div class="field-row"><label class="field">Course<input id="course" name="course" maxlength="80" placeholder="e.g. DevOps"></label><label class="field">Due date<input id="due-date" name="due_date" type="date" required></label></div>
+      <div class="field-row"><label class="field">Priority<select id="priority" name="priority"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></label><label class="field" id="status-wrap">Status<select id="status" name="status"><option value="todo">To do</option><option value="in_progress">In progress</option><option value="done">Done</option></select></label></div>
+      <label class="field">Notes <span class="optional">(optional)</span><textarea id="description" name="description" rows="3" maxlength="2000" placeholder="A quick note about the next step…"></textarea></label>
+      <p id="form-error" class="form-error" role="alert"></p>
+      <div class="dialog-actions"><button type="button" class="danger-button" id="delete-task">Delete</button><span class="action-spacer"></span><button type="button" class="secondary-button" id="cancel-dialog">Cancel</button><button class="primary-button" type="submit" id="save-task">Save assignment <span>→</span></button></div>
+    </form>
+  </dialog>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
