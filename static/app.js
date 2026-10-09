@@ -15,6 +15,9 @@ let calendarCursor = new Date(new Date().getFullYear(), new Date().getMonth(), 1
 let pollTimer = null;
 let lastGroupMessageId = 0;
 let lastDirectMessageId = 0;
+let activeGroupChatId = null;
+let showFullArchive = false;
+let boardMetric = '';
 
 function showMessage(message, type = 'error') {
   appMessage.textContent = message;
@@ -94,7 +97,9 @@ function authMode(register) {
   const form = $('#auth-form');
   form.dataset.register = String(register);
   $('#name-field').hidden = !register;
+  $('#username-field').hidden = !register;
   $('[name="name"]', form).required = register;
+  $('[name="username"]', form).required = register;
   $('#auth-title').textContent = register ? 'Start your account.' : 'Welcome back.';
   $('#auth-submit').textContent = register ? 'Create account →' : 'Sign in →';
   $('#auth-switch').textContent = register ? 'Already have an account? Sign in' : 'New to StudyPilot? Create an account';
@@ -109,7 +114,11 @@ $('#auth-form').addEventListener('submit', async (event) => {
   const registering = event.currentTarget.dataset.register === 'true';
   $('#auth-error').textContent = '';
   try {
-    user = await post(registering ? '/api/auth/register' : '/api/auth/login', Object.fromEntries(new FormData(event.currentTarget)));
+    const formData = new FormData(event.currentTarget);
+    const payload = registering
+      ? { email: formData.get('email'), name: formData.get('name'), username: formData.get('username'), password: formData.get('password') }
+      : { email: formData.get('email'), password: formData.get('password') };
+    user = await post(registering ? '/api/auth/register' : '/api/auth/login', payload);
     $('#auth-screen').hidden = true;
     $('#app-screen').hidden = false;
     await startApp();
@@ -152,13 +161,14 @@ async function acceptUrlInvitation() {
 }
 
 function routeFromHash() {
-  const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-  return { name: parts[0] || 'dashboard', id: parts[0] === 'groups' && parts[1] ? Number(parts[1]) : null };
+  const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');
+  const parts = path.split('/').filter(Boolean);
+  return { name: parts[0] || 'dashboard', id: parts[0] === 'groups' && parts[1] ? Number(parts[1]) : null, query: new URLSearchParams(query) };
 }
 
 async function renderRoute() {
   const route = routeFromHash();
-  const known = ['dashboard', 'groups', 'calendar', 'messages'];
+  const known = ['dashboard', 'board', 'groups', 'calendar', 'messages'];
   if (!known.includes(route.name)) { location.hash = '#/dashboard'; return; }
   $$('.view').forEach((view) => { view.hidden = true; view.classList.remove('active-view'); });
   $(`#view-${route.name}`).hidden = false;
@@ -166,14 +176,17 @@ async function renderRoute() {
   $$('.nav-link').forEach((link) => link.classList.toggle('active', link.dataset.route === route.name));
   activeProject = null;
   activeConversation = null;
+  activeGroupChatId = null;
   stopPolling();
   showMessage('');
   try {
-    if (route.name === 'dashboard') await loadTasks().then(renderDashboard);
+    if (route.name === 'dashboard') { await Promise.all([loadTasks(), loadProjects()]); renderDashboard(); }
+    if (route.name === 'board') { await loadTasks(); boardMetric = new URLSearchParams(location.hash.split('?')[1] || '').get('filter') || ''; renderBoardView(); }
     if (route.name === 'groups') {
+      if (route.id) { $('#projects-grid').hidden = true; $('.page-heading', $('#view-groups')).hidden = true; }
+      else { $('#projects-grid').hidden = false; $('.page-heading', $('#view-groups')).hidden = false; $('#project-detail').hidden = true; }
       await loadProjects();
       if (route.id) await renderProject(route.id);
-      else $('#project-detail').hidden = true;
     }
     if (route.name === 'calendar') {
       await Promise.all([loadTasks(), loadProjects()]);
@@ -201,7 +214,7 @@ async function loadPeople() {
   people = await api('/api/people');
   const select = $('#new-message-person');
   const selected = select.value;
-  select.replaceChildren(new Option('Choose a classmate', ''), ...people.map((person) => new Option(person.name, person.id)));
+  select.replaceChildren(new Option('Choose a classmate', ''), ...people.map((person) => new Option(`${person.name} · @${person.username}`, person.id)));
   select.value = people.some((person) => String(person.id) === selected) ? selected : '';
 }
 
@@ -215,19 +228,22 @@ async function loadCalendarMilestones() {
 
 function renderDashboard() {
   const today = todayLocal();
-  const pending = tasks.filter((task) => task.status !== 'done').sort((a, b) => (a.due_date || '').localeCompare(b.due_date || ''));
-  $('#up-next').textContent = pending.length ? formatDate(pending[0].due_date) : 'All clear';
+  const dueTodayOrLater = tasks.filter((task) => task.status !== 'done' && dateOnly(task.due_date) >= today).sort((a, b) => a.due_date.localeCompare(b.due_date));
+  const done = tasks.filter((task) => task.status === 'done').length;
+  const pending = tasks.filter((task) => task.status !== 'done').length;
+  $('#up-next').textContent = dueTodayOrLater.length ? formatDate(dueTodayOrLater[0].due_date) : 'All clear';
   $('#in-progress').textContent = tasks.filter((task) => task.status === 'in_progress').length;
-  $('#completed').textContent = tasks.filter((task) => task.status === 'done').length;
+  $('#completed').textContent = done;
   $('#overdue').textContent = tasks.filter(isOverdue).length;
-  const courses = [...new Set(tasks.map((task) => task.course).filter(Boolean))].sort();
-  const filter = $('#course-filter');
-  const chosen = filter.value;
-  filter.replaceChildren(new Option('All courses', ''), ...courses.map((course) => new Option(course, course)));
-  filter.value = courses.includes(chosen) ? chosen : '';
-  updateDashboardBoard();
-  if (pending.length && dateOnly(pending[0].due_date) < today) $('#up-next').classList.add('overdue-text');
-  else $('#up-next').classList.remove('overdue-text');
+  const rate = tasks.length ? Math.round(done / tasks.length * 100) : 0;
+  $('#completion-rate').textContent = `${rate}%`;
+  $('#completion-bar').style.width = `${rate}%`;
+  $('#progress-caption').textContent = tasks.length ? `${done} of ${tasks.length} assignments completed` : 'Add an assignment to start tracking progress.';
+  $('#group-summary').textContent = `${projects.length} study groups · ${projects.reduce((sum, project) => sum + Number(project.member_count || 0), 0)} group memberships`;
+  const preview = $('#todo-preview'); preview.replaceChildren();
+  const focus = tasks.filter((task) => task.status !== 'done').sort((a, b) => Number(isOverdue(b)) - Number(isOverdue(a)) || ({high:0,medium:1,low:2}[a.priority] - {high:0,medium:1,low:2}[b.priority]) || a.due_date.localeCompare(b.due_date)).slice(0, 5);
+  if (!focus.length) { const empty = document.createElement('p'); empty.className = 'subtle-empty'; empty.textContent = 'Nothing pending. Enjoy the breathing room.'; preview.append(empty); }
+  focus.forEach((task) => { const row = document.createElement('button'); row.className = 'todo-preview-row'; const title = document.createElement('strong'); title.textContent = task.title; const meta = document.createElement('small'); meta.textContent = `${isOverdue(task) ? 'Overdue' : `Due ${formatDate(task.due_date)}`} · ${task.priority} priority`; row.append(title, meta); row.addEventListener('click', () => { location.hash = `#/board?filter=${isOverdue(task) ? 'overdue' : 'all'}`; }); preview.append(row); });
 }
 
 function filterTasks(items) {
@@ -238,19 +254,40 @@ function filterTasks(items) {
 
 function updateDashboardBoard() {
   const filtered = filterTasks(tasks);
-  const hasMatches = filtered.length > 0;
-  renderBoard($('#task-board'), filtered, null);
+  const statusFiltered = filtered.filter((task) => {
+    if (boardMetric === 'up-next') return task.status !== 'done' && dateOnly(task.due_date) >= todayLocal();
+    if (boardMetric === 'overdue') return isOverdue(task);
+    if (boardMetric === 'in_progress' || boardMetric === 'done') return task.status === boardMetric;
+    return true;
+  });
+  const done = statusFiltered.filter((task) => task.status === 'done').sort((a,b) => (b.completed_at || b.updated_at || '').localeCompare(a.completed_at || a.updated_at || ''));
+  const shownDone = showFullArchive || $('#task-search').value.trim() ? done : done.slice(0, 15);
+  const displayed = statusFiltered.filter((task) => task.status !== 'done').concat(shownDone);
+  const hasMatches = displayed.length > 0;
+  renderBoard($('#task-board'), displayed, null);
   $('#task-board').hidden = !hasMatches;
   $('#task-empty').hidden = hasMatches;
   const searching = $('#task-search').value.trim() || $('#course-filter').value;
-  $('#task-empty h3').textContent = tasks.length && searching ? 'No matching assignments' : 'No assignments here yet';
-  $('#task-empty p').textContent = tasks.length && searching ? 'Try a different search or course filter.' : 'Add an assignment to get started.';
-  $('#empty-add').textContent = tasks.length && searching ? 'Clear search and filters' : '＋ Add assignment';
+  $('#task-empty h3').textContent = tasks.length && (searching || boardMetric) ? 'No matching assignments' : 'No assignments here yet';
+  $('#task-empty p').textContent = tasks.length && (searching || boardMetric) ? 'Try another search or choose a different summary card.' : 'Add an assignment to get started.';
+  $('#empty-add').textContent = tasks.length && (searching || boardMetric) ? 'Clear search and filters' : '＋ Add assignment';
+  const note = $('#archive-note');
+  if (note) { note.hidden = !done.length; note.textContent = `${shownDone.length} of ${done.length} completed assignments shown. `; const toggle = document.createElement('button'); toggle.className='text-button'; toggle.textContent = showFullArchive ? 'Show recent only' : 'Search full history / show all'; toggle.addEventListener('click', () => { showFullArchive = !showFullArchive; updateDashboardBoard(); }); note.append(toggle); }
 }
 
 $('#task-search').addEventListener('input', updateDashboardBoard);
 $('#course-filter').addEventListener('change', updateDashboardBoard);
 $('#new-task').addEventListener('click', () => openNewTask(null));
+$('#board-new-task').addEventListener('click', () => openNewTask(null));
+$$('.metric-card').forEach((card) => card.addEventListener('click', () => { location.hash = `#/board?filter=${card.dataset.metric}`; }));
+
+function renderBoardView() {
+  const courses = [...new Set(tasks.map((task) => task.course).filter(Boolean))].sort();
+  const filter = $('#course-filter'); const chosen = filter.value;
+  filter.replaceChildren(new Option('All courses', ''), ...courses.map((course) => new Option(course, course)));
+  filter.value = courses.includes(chosen) ? chosen : '';
+  updateDashboardBoard();
+}
 $('#empty-add').addEventListener('click', () => {
   if (tasks.length && ($('#task-search').value.trim() || $('#course-filter').value)) {
     $('#task-search').value = ''; $('#course-filter').value = ''; updateDashboardBoard();
@@ -306,6 +343,10 @@ function makeTaskCard(task, project) {
   deadline.textContent = `${isOverdue(task) ? 'Overdue · ' : 'Due · '}${formatDate(task.due_date, { month: 'short', day: 'numeric', year: 'numeric' })}`;
   const assignees = document.createElement('p'); assignees.className = 'task-assignees';
   assignees.textContent = task.assignees?.length ? task.assignees.map((person) => person.name).join(', ') : (project ? 'No teammates assigned' : 'Just you');
+  if (task.started_at) {
+    const start = timestamp(task.started_at); const end = timestamp(task.completed_at);
+    if (start) { const duration = document.createElement('small'); duration.className='work-duration'; const hours=Math.max(0,Math.round((end-start)/3600000)); duration.textContent = end ? `Work time · ${hours < 24 ? `${hours} hours` : `${Math.round(hours/24)} days`}` : `Started · ${formatTimestamp(task.started_at)}`; assignees.append(document.createElement('br'),duration); }
+  }
   const actions = document.createElement('div'); actions.className = 'task-card-actions';
   const move = document.createElement('button'); move.className = 'move-button';
   const nextStatus = task.status === 'todo' ? 'in_progress' : task.status === 'in_progress' ? 'done' : 'in_progress';
@@ -317,9 +358,16 @@ function makeTaskCard(task, project) {
   Object.entries(statusNames).forEach(([value, name]) => status.add(new Option(name, value)));
   status.value = task.status; status.addEventListener('change', () => changeTaskStatus(task, status.value, project));
   const comment = document.createElement('button'); comment.className = 'text-button'; comment.textContent = 'Comments'; comment.addEventListener('click', () => toggleComments(card, task, project));
-  actions.append(status, move, comment);
+  const historyButton=document.createElement('button');historyButton.className='text-button';historyButton.textContent='History';historyButton.addEventListener('click',()=>toggleTaskHistory(card,task));
+  actions.append(status, move, comment, historyButton);
   card.append(titleLine, context, deadline, assignees, actions);
   return card;
+}
+
+async function toggleTaskHistory(card, task) {
+  const existing=$('.task-history',card);if(existing){existing.remove();return;}
+  const panel=document.createElement('div');panel.className='task-history';panel.textContent='Loading history…';card.append(panel);
+  try{const rows=await api(`/api/tasks/${task.id}/history`);panel.replaceChildren();if(!rows.length){panel.textContent='No status changes recorded yet.';return;}rows.forEach(row=>{const item=document.createElement('p');item.textContent=`${row.changed_by||'A teammate'} moved ${row.from_status||'new'} → ${row.to_status} · ${formatTimestamp(row.changed_at)}`;panel.append(item);});}catch(error){panel.textContent=error.message;}
 }
 
 function makeTag(text, className) { const tag = document.createElement('span'); tag.className = className; tag.textContent = text; return tag; }
@@ -330,6 +378,7 @@ async function changeTaskStatus(task, status, project) {
     showMessage('');
     await loadTasks(project?.id || null);
     if (project) await loadProjectBoard(project);
+    else if (routeFromHash().name === 'board') renderBoardView();
     else renderDashboard();
   } catch (error) { showMessage(error.message); }
 }
@@ -391,6 +440,7 @@ taskForm.addEventListener('submit', async (event) => {
     $('#task-dialog').close();
     await loadTasks(projectId || null);
     if (projectId) await loadProjectBoard(activeProject);
+    else if (routeFromHash().name === 'board') renderBoardView();
     else renderDashboard();
   } catch (error) { $('#form-error').textContent = error.message; }
 });
@@ -398,13 +448,14 @@ taskForm.addEventListener('submit', async (event) => {
 $('#delete-task').addEventListener('click', async () => {
   const id = $('#task-id').value;
   if (!id) return;
+  if (!confirm('Delete this assignment? This cannot be undone.')) return;
   $('#form-error').textContent = '';
   try {
     await api(`/api/tasks/${id}`, { method: 'DELETE' });
     $('#task-dialog').close();
     const projectId = taskForm.dataset.projectId;
     await loadTasks(projectId || null);
-    if (projectId) await loadProjectBoard(activeProject); else renderDashboard();
+    if (projectId) await loadProjectBoard(activeProject); else if (routeFromHash().name === 'board') renderBoardView(); else renderDashboard();
   } catch (error) { $('#form-error').textContent = error.message; }
 });
 
@@ -475,7 +526,8 @@ async function renderProject(projectId) {
   const actions = document.createElement('div'); actions.className = 'page-actions';
   const addTask = document.createElement('button'); addTask.className = 'primary-button'; addTask.textContent = '＋ Assignment'; addTask.hidden = activeProject.role === 'viewer'; addTask.addEventListener('click', () => openNewTask(activeProject));
   const invite = document.createElement('button'); invite.className = 'secondary-button'; invite.textContent = 'Invite classmate'; invite.hidden = activeProject.role !== 'owner'; invite.addEventListener('click', () => { $('#invite-form').reset(); $('#invite-error').textContent = ''; $('#invite-result').hidden = true; $('#invite-submit').hidden = false; $('#invite-dialog').showModal(); });
-  actions.append(addTask, invite); top.append(titlebox, actions); head.append(back, top); pane.append(head);
+  const openChat = document.createElement('a'); openChat.className = 'secondary-button'; openChat.href = `#/messages?group=${activeProject.id}`; openChat.textContent = 'Open group chat';
+  actions.append(addTask, invite, openChat); top.append(titlebox, actions); head.append(back, top); pane.append(head);
   const layout = document.createElement('div'); layout.className = 'group-workspace-grid';
   const plan = document.createElement('section'); plan.className = 'group-plan';
   const taskHeading = document.createElement('div'); taskHeading.className = 'subsection-heading'; const taskTitle = document.createElement('h3'); taskTitle.textContent = 'Shared assignments'; taskHeading.append(taskTitle); plan.append(taskHeading);
@@ -485,13 +537,8 @@ async function renderProject(projectId) {
   activeProject.members.forEach((member) => { const row = document.createElement('div'); row.className = 'member-row'; const avatar = document.createElement('span'); avatar.className = 'avatar small-avatar'; avatar.textContent = member.name.slice(0, 1).toUpperCase(); const name = document.createElement('span'); name.className = 'member-name'; name.textContent = member.name + (member.id === user.id ? ' · You' : ''); const role = document.createElement('small'); role.textContent = member.role; row.append(avatar, name, role); if (member.id !== user.id) { const dm = document.createElement('button'); dm.className = 'text-button'; dm.textContent = 'Message'; dm.setAttribute('aria-label', `Message ${member.name}`); dm.addEventListener('click', () => openDirectConversation(member.id)); row.append(dm); } memberPanel.append(row); });
   const milestonePanel = document.createElement('section'); milestonePanel.className = 'group-panel milestones-panel'; const milestoneHead = document.createElement('div'); milestoneHead.className = 'subsection-heading'; const milestoneTitle = document.createElement('h3'); milestoneTitle.textContent = 'Milestones'; milestoneHead.append(milestoneTitle); const milestoneAdd = document.createElement('button'); milestoneAdd.className = 'text-button'; milestoneAdd.textContent = '＋ Add'; milestoneAdd.hidden = activeProject.role === 'viewer'; milestoneAdd.addEventListener('click', () => { $('#milestone-form').reset(); $('#milestone-error').textContent = ''; $('#milestone-dialog').showModal(); }); milestoneHead.append(milestoneAdd); milestonePanel.append(milestoneHead); const milestoneList = document.createElement('div'); milestoneList.id = 'milestone-list'; milestonePanel.append(milestoneList);
   sidebar.append(memberPanel, milestonePanel);
-  const chatPanel = document.createElement('section'); chatPanel.className = 'group-panel project-chat';
-  const chatHead = document.createElement('div'); chatHead.className = 'subsection-heading'; const chatTitle = document.createElement('h3'); chatTitle.textContent = 'Group chat'; const live = document.createElement('span'); live.className = 'live-label'; live.textContent = '● Live updates'; chatHead.append(chatTitle, live);
-  const chatStream = document.createElement('div'); chatStream.id = 'chat-stream'; chatStream.className = 'chat-stream';
-  const chatForm = document.createElement('form'); chatForm.className = 'chat-form'; chatForm.hidden = activeProject.role === 'viewer'; const chatInput = document.createElement('input'); chatInput.name = 'body'; chatInput.maxLength = 2000; chatInput.required = true; chatInput.placeholder = 'Share an update…'; chatInput.setAttribute('aria-label', 'Group message'); const chatSend = document.createElement('button'); chatSend.className = 'primary-button'; chatSend.textContent = 'Send'; chatForm.append(chatInput, chatSend); chatForm.addEventListener('submit', async (event) => { event.preventDefault(); try { await post(`/api/projects/${activeProject.id}/messages`, { body: chatInput.value }); chatInput.value = ''; await loadGroupMessages(); await loadNotifications(); } catch (error) { showMessage(error.message); } });
-  chatPanel.append(chatHead, chatStream, chatForm); layout.append(plan, sidebar, chatPanel); pane.append(layout);
-  await Promise.all([loadProjectBoard(activeProject), loadMilestones(activeProject.id), loadGroupMessages()]);
-  pollTimer = setInterval(() => { if (!document.hidden && activeProject) { loadGroupMessages().catch(() => {}); loadNotifications().catch(() => {}); } }, 4000);
+  layout.append(plan, sidebar); pane.append(layout);
+  await Promise.all([loadProjectBoard(activeProject), loadMilestones(activeProject.id)]);
 }
 
 async function loadProjectBoard(project) {
@@ -536,9 +583,11 @@ async function loadGroupMessages() {
 
 function appendChatMessage(stream, message, mine) {
   if (stream.textContent.startsWith('Your group chat starts')) stream.replaceChildren();
-  const article = document.createElement('article'); article.className = `chat-message ${mine ? 'mine' : ''}`;
-  const byline = document.createElement('div'); byline.className = 'message-byline'; byline.textContent = `${message.name || message.sender_name || 'Classmate'} · ${formatTimestamp(message.created_at)}`;
-  const body = document.createElement('p'); body.textContent = message.body; article.append(byline, body); stream.append(article);
+  const article = document.createElement('article'); article.className = `chat-message ${mine ? 'mine' : ''} ${message.pinned_at ? 'pinned-message' : ''}`;
+  const byline = document.createElement('div'); byline.className = 'message-byline'; byline.textContent = `${message.name || message.sender_name || 'Classmate'} · ${formatTimestamp(message.created_at)}${message.edited_at ? ' · edited' : ''}${message.pinned_at ? ' · pinned' : ''}`;
+  const body = document.createElement('p'); body.textContent = message.body; article.append(byline, body);
+  if(activeGroupChatId){const tools=document.createElement('div');tools.className='message-actions';if(mine){const edit=document.createElement('button');edit.className='text-button';edit.textContent='Edit';edit.addEventListener('click',async()=>{const next=prompt('Edit your message',message.body);if(next===null)return;try{await patch(`/api/projects/${activeGroupChatId}/messages/${message.id}`,{body:next});await refreshGroupThread();}catch(error){showMessage(error.message);}});const remove=document.createElement('button');remove.className='text-button';remove.textContent='Delete';remove.addEventListener('click',async()=>{if(!confirm('Delete this message? This cannot be undone.'))return;try{await api(`/api/projects/${activeGroupChatId}/messages/${message.id}`,{method:'DELETE'});await refreshGroupThread();}catch(error){showMessage(error.message);}});tools.append(edit,remove);}const group=projects.find(item=>item.id===activeGroupChatId);if(group?.role==='owner'){const pin=document.createElement('button');pin.className='text-button';pin.textContent=message.pinned_at?'Unpin':'Pin';pin.addEventListener('click',async()=>{try{await api(`/api/projects/${activeGroupChatId}/messages/${message.id}/pin`,{method:message.pinned_at?'DELETE':'POST'});await refreshGroupThread();}catch(error){showMessage(error.message);}});tools.append(pin);}article.append(tools);}
+  stream.append(article);
 }
 
 $('#invite-form').addEventListener('submit', async (event) => {
@@ -551,7 +600,8 @@ $('#invite-form').addEventListener('submit', async (event) => {
     const codeLabel = document.createElement('label'); codeLabel.className = 'field'; codeLabel.textContent = 'Invitation code'; const code = document.createElement('input'); code.readOnly = true; code.value = result.token; codeLabel.append(code);
     const linkLabel = document.createElement('label'); linkLabel.className = 'field'; linkLabel.textContent = 'Invitation link'; const link = document.createElement('input'); link.readOnly = true; link.value = linkUrl; linkLabel.append(link);
     const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'secondary-button'; copy.textContent = 'Copy link'; copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(linkUrl); copy.textContent = 'Copied'; } catch { link.select(); document.execCommand('copy'); copy.textContent = 'Copied'; } });
-    box.append(detail, codeLabel, linkLabel, copy); $('#invite-error').textContent = ''; $('#invite-submit').hidden = true;
+    const copyCode = document.createElement('button'); copyCode.type = 'button'; copyCode.className = 'secondary-button'; copyCode.textContent = 'Copy code'; copyCode.addEventListener('click', async () => { try { await navigator.clipboard.writeText(result.token); copyCode.textContent = 'Copied'; } catch { code.select(); document.execCommand('copy'); copyCode.textContent = 'Copied'; } });
+    box.append(detail, codeLabel, copyCode, linkLabel, copy); $('#invite-error').textContent = ''; $('#invite-submit').hidden = true;
   } catch (error) { $('#invite-error').textContent = error.message; }
 });
 
@@ -587,12 +637,14 @@ $('#month-prev').addEventListener('click', () => { calendarCursor = new Date(cal
 $('#month-next').addEventListener('click', () => { calendarCursor = new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() + 1, 1); renderCalendar(); });
 
 async function renderInbox() {
-  await Promise.all([loadPeople(), loadConversations()]);
+  await Promise.all([loadProjects(), loadPeople(), loadConversations()]);
   renderConversations();
   const targetId = pendingConversationId;
   pendingConversationId = null;
-  if (targetId && conversations.some((item) => item.id === targetId)) await openConversation(targetId);
-  if (!activeConversation) $('#direct-thread').innerHTML = '<div class="thread-empty"><span class="empty-check">↗</span><h2>Choose a conversation</h2><p>Select a classmate on the left or start a new one above.</p></div>';
+  const groupId = Number(new URLSearchParams(location.hash.split('?')[1] || '').get('group'));
+  if (groupId && projects.some((item) => item.id === groupId)) await openGroupConversation(groupId);
+  else if (targetId && conversations.some((item) => item.id === targetId)) await openConversation(targetId);
+  else if (!activeConversation && !activeGroupChatId) $('#direct-thread').innerHTML = '<div class="thread-empty"><span class="empty-check">↗</span><h2>Choose a conversation</h2><p>Select a classmate or a study group on the left.</p></div>';
 }
 
 async function loadConversations() { conversations = await api('/api/direct/conversations'); updateUnreadCount(); }
@@ -604,9 +656,34 @@ function updateUnreadCount() {
 
 function renderConversations() {
   const list = $('#conversation-list'); list.replaceChildren();
-  if (!conversations.length) { const empty = document.createElement('p'); empty.className = 'subtle-empty'; empty.textContent = 'No conversations yet. Choose a classmate above to start one.'; list.append(empty); return; }
+  const groupLabel = document.createElement('p'); groupLabel.className='eyebrow'; groupLabel.textContent='STUDY GROUPS'; list.append(groupLabel);
+  projects.forEach((project) => { const button=document.createElement('button'); button.className=`conversation-item ${activeGroupChatId===project.id?'selected':''}`; const avatar=document.createElement('span'); avatar.className='avatar'; avatar.textContent='✦'; const content=document.createElement('span'); content.className='conversation-content'; const name=document.createElement('strong'); name.textContent=project.name; const last=document.createElement('small'); last.textContent='Group conversation'; content.append(name,last); button.append(avatar,content); button.addEventListener('click',()=>openGroupConversation(project.id)); list.append(button); });
+  const peopleLabel=document.createElement('p'); peopleLabel.className='eyebrow'; peopleLabel.textContent='CLASSMATES'; list.append(peopleLabel);
   conversations.forEach((conversation) => { const button = document.createElement('button'); button.className = `conversation-item ${activeConversation?.id === conversation.id ? 'selected' : ''}`; const avatar = document.createElement('span'); avatar.className = 'avatar'; avatar.textContent = conversation.person_name.slice(0, 1).toUpperCase(); const content = document.createElement('span'); content.className = 'conversation-content'; const name = document.createElement('strong'); name.textContent = conversation.person_name; const last = document.createElement('small'); last.textContent = conversation.last_message || 'Start your conversation'; content.append(name, last); button.append(avatar, content); if (conversation.unread_count) { const unread = document.createElement('span'); unread.className = 'unread-pill'; unread.textContent = conversation.unread_count; button.append(unread); } button.addEventListener('click', () => openConversation(conversation.id)); list.append(button); });
+  api('/api/friend-requests').then((requests)=>{ const incoming=requests.filter(item=>item.direction==='incoming'&&item.status==='pending'); if(incoming.length){ const label=document.createElement('p');label.className='eyebrow';label.textContent='FRIEND REQUESTS';list.append(label); incoming.forEach(item=>{const row=document.createElement('div');row.className='conversation-item';const text=document.createElement('span');text.className='conversation-content';text.textContent=`${item.name} · @${item.username}`;row.append(text);['accept','decline','block'].forEach(action=>{const b=document.createElement('button');b.className='text-button';b.textContent=action[0].toUpperCase()+action.slice(1);b.addEventListener('click',async()=>{try{await post(`/api/friend-requests/${item.id}/${action}`,{});await renderInbox();}catch(error){showMessage(error.message);}});row.append(b);});list.append(row);});}}).catch(()=>{});
 }
+
+async function openGroupConversation(projectId) {
+  const project = projects.find(item => item.id === projectId); if (!project) return;
+  activeGroupChatId = projectId; activeConversation = null; stopPolling();
+  const thread=$('#direct-thread');thread.replaceChildren();
+  const header=document.createElement('div');header.className='thread-header';const title=document.createElement('h2');title.textContent=project.name;const subtitle=document.createElement('span');subtitle.textContent='Group conversation · visible to members';header.append(title,subtitle);
+  const stream=document.createElement('div');stream.id='direct-stream';stream.className='direct-stream';
+  const form=document.createElement('form');form.className='chat-form direct-form';form.hidden=project.role==='viewer';const input=document.createElement('input');input.name='body';input.required=true;input.maxLength=2000;input.placeholder='Share an update…';input.setAttribute('aria-label','Group message');const send=document.createElement('button');send.className='primary-button';send.textContent='Send';form.append(input,send);
+  form.addEventListener('submit',async(event)=>{event.preventDefault();try{await post(`/api/projects/${projectId}/messages`,{body:input.value});input.value='';await refreshGroupThread();await loadNotifications();}catch(error){showMessage(error.message);}});
+  thread.append(header,stream,form);await refreshGroupThread();
+  pollTimer=setInterval(()=>{if(!document.hidden&&activeGroupChatId===projectId)refreshGroupThread().catch(()=>{});},4000);renderConversations();
+}
+
+async function refreshGroupThread() {
+  if (!activeGroupChatId) return;
+  const stream=$('#direct-stream');if(!stream)return;
+  const messages=await api(`/api/projects/${activeGroupChatId}/messages`);stream.replaceChildren();
+  if(!messages.length){stream.textContent='Your group chat starts here. Share a question, a win, or what you’re working on.';return;}
+  messages.slice(-60).forEach(message=>appendChatMessage(stream,message,message.user_id===user.id));stream.scrollTop=stream.scrollHeight;
+}
+
+$('#friend-search-form').addEventListener('submit',async(event)=>{event.preventDefault();const username=new FormData(event.currentTarget).get('username').trim().replace(/^@/,'');const note=$('#friend-search-note');note.textContent='';try{const matches=await api(`/api/people/search?q=${encodeURIComponent(username)}`);const person=matches.find(item=>item.username.toLowerCase()===username.toLowerCase());if(!person)throw new Error('No classmate found with that username. Check the spelling and try again.');const result=await post('/api/friend-requests',{username:person.username});note.textContent=result.status==='accepted'?'Friend request accepted. You can start a message now.':'Request sent. They can accept it in Messages.';event.currentTarget.reset();await renderInbox();}catch(error){note.textContent=error.message;}});
 
 $('#new-message-person').addEventListener('change', async (event) => { if (!event.target.value) return; await openDirectConversation(Number(event.target.value)); event.target.value = ''; });
 
@@ -620,6 +697,7 @@ async function openDirectConversation(personId) {
 }
 
 async function openConversation(conversationId) {
+  activeGroupChatId = null;
   activeConversation = conversations.find((item) => item.id === conversationId) || { id: conversationId };
   lastDirectMessageId = 0;
   const thread = $('#direct-thread'); thread.replaceChildren();
@@ -657,10 +735,10 @@ async function loadNotifications() {
 
 $('#account-button').addEventListener('click', () => { $('#account-menu').hidden = !$('#account-menu').hidden; });
 document.addEventListener('click', (event) => { if (!event.target.closest('.account-area')) $('#account-menu').hidden = true; });
-$('#profile-open').addEventListener('click', () => { $('#account-menu').hidden = true; $('#profile-form').reset(); $('#profile-form').elements.name.value = user.name; $('#profile-email').value = user.email; $('#profile-error').textContent = ''; $('#profile-saved').textContent = ''; $('#profile-dialog').showModal(); });
+$('#profile-open').addEventListener('click', () => { $('#account-menu').hidden = true; $('#profile-form').reset(); $('#profile-form').elements.name.value = user.name; $('#profile-form').elements.username.value = user.username; $('#profile-email').value = user.email; $('#profile-error').textContent = ''; $('#profile-saved').textContent = ''; $('#profile-dialog').showModal(); });
 $('#profile-form').addEventListener('submit', async (event) => {
   event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); $('#profile-error').textContent = ''; $('#profile-saved').textContent = '';
-  try { user = await patch('/api/profile', { name: data.name }); if (data.new_password) await api('/api/profile/password', { method: 'POST', body: JSON.stringify({ current_password: data.current_password, new_password: data.new_password }) }); $('#account-name').textContent = user.name; $('#avatar').textContent = user.name.slice(0, 1).toUpperCase(); $('#profile-saved').textContent = 'Your settings are saved.'; }
+  try { user = await patch('/api/profile', { name: data.name, username: data.username }); if (data.new_password) await api('/api/profile/password', { method: 'POST', body: JSON.stringify({ current_password: data.current_password, new_password: data.new_password }) }); $('#account-name').textContent = user.name; $('#avatar').textContent = user.name.slice(0, 1).toUpperCase(); $('#profile-saved').textContent = 'Your settings are saved.'; }
   catch (error) { $('#profile-error').textContent = error.message; }
 });
 

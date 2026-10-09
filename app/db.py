@@ -38,6 +38,21 @@ def initialize() -> None:
             password_hash TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
         )""")
+        user_columns = {row["name"] for row in con.execute("PRAGMA table_info(users)")}
+        if "username" not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN username TEXT")
+            # Existing users get a deterministic, private handle; users can change it in settings.
+            for row in con.execute("SELECT id,email FROM users WHERE username IS NULL").fetchall():
+                base = row["email"].split("@", 1)[0].lower()
+                handle = "".join(c for c in base if c.isalnum() or c in "._-")[:24] or f"student{row['id']}"
+                if len(handle) < 3:
+                    handle = f"student{row['id']}"
+                candidate = handle
+                suffix = 2
+                while con.execute("SELECT 1 FROM users WHERE username=? COLLATE NOCASE", (candidate,)).fetchone():
+                    candidate = f"{handle[:20]}{suffix}"; suffix += 1
+                con.execute("UPDATE users SET username=? WHERE id=?", (candidate, row["id"]))
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)")
         con.execute("""CREATE TABLE IF NOT EXISTS projects (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 120),
@@ -137,6 +152,23 @@ def initialize() -> None:
             con.execute("ALTER TABLE tasks ADD COLUMN owner_id INTEGER REFERENCES users(id) ON DELETE CASCADE")
         if "project_id" not in columns:
             con.execute("ALTER TABLE tasks ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE")
+        for column in ("started_at", "completed_at"):
+            if column not in columns:
+                con.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT")
+        con.execute("""CREATE TABLE IF NOT EXISTS task_status_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            from_status TEXT, to_status TEXT NOT NULL,
+            changed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )""")
+        message_columns = {row["name"] for row in con.execute("PRAGMA table_info(messages)")}
+        if "edited_at" not in message_columns:
+            con.execute("ALTER TABLE messages ADD COLUMN edited_at TEXT")
+        if "pinned_at" not in message_columns:
+            con.execute("ALTER TABLE messages ADD COLUMN pinned_at TEXT")
+        if "pinned_by" not in message_columns:
+            con.execute("ALTER TABLE messages ADD COLUMN pinned_by INTEGER REFERENCES users(id) ON DELETE SET NULL")
         con.execute("""CREATE TABLE IF NOT EXISTS task_assignees (
             task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -148,6 +180,16 @@ def initialize() -> None:
         con.execute("CREATE INDEX IF NOT EXISTS idx_messages_project ON messages(project_id,id)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id,due_date)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_direct_messages_conversation ON direct_messages(conversation_id,id)")
+        con.execute("""CREATE TABLE IF NOT EXISTS friend_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            requester_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','declined','blocked')),
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+            CHECK(requester_id<>recipient_id), UNIQUE(requester_id,recipient_id)
+        )""")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_friend_requests_pair ON friend_requests(requester_id,recipient_id,status)")
 
 
 def row_to_task(row: sqlite3.Row) -> dict:

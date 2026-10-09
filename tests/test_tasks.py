@@ -14,7 +14,7 @@ def client_for(path, monkeypatch):
 
 
 def register(client, email="alex@example.edu", name="Alex Student"):
-    response = client.post("/api/auth/register", json={"email": email, "name": name, "password": "study-together-123"})
+    response = client.post("/api/auth/register", json={"email": email, "username": email.split("@")[0].replace("+", "."), "name": name, "password": "study-together-123"})
     assert response.status_code == 201, response.text
     return response.json()
 
@@ -45,7 +45,7 @@ def test_validation_profile_and_private_personal_tasks(tmp_path, monkeypatch):
         assert alice.post("/api/tasks", json={"title": "Secret", "due_date": "2026-10-09"}).status_code == 401
         register(alice)
         task = alice.post("/api/tasks", json={"title": "My notes", "due_date": "2026-10-09"}).json()
-        assert alice.post("/api/auth/register", json={"email": "alex@example.edu", "name": "A", "password": "study-together-123"}).status_code == 409
+        assert alice.post("/api/auth/register", json={"email": "alex@example.edu", "username": "alex", "name": "A", "password": "study-together-123"}).status_code == 409
         assert alice.post("/api/tasks", json={"title": "", "due_date": "2026-10-09"}).status_code == 422
         assert alice.post("/api/tasks", json={"title": "Essay", "due_date": "bad-date"}).status_code == 422
         assert alice.patch("/api/tasks/444", json={"status": "done"}).status_code == 404
@@ -154,7 +154,7 @@ def test_direct_messages_are_private_to_shared_group_participants(tmp_path, monk
             register(ben, "ben@example.edu", "Ben")
             ben.post(f"/api/invitations/{invite['token']}/accept")
             contacts = ben.get("/api/people").json()
-            assert contacts == [{"id": 1, "name": "Alice"}]
+            assert contacts == [{"id": 1, "name": "Alice", "username": "alice"}]
             conversation = ben.post("/api/direct/conversations", json={"recipient_id": 1})
             assert conversation.status_code == 201
             conversation_id = conversation.json()["id"]
@@ -196,3 +196,99 @@ def test_homepage_is_served(tmp_path, monkeypatch):
         assert "Recent Activity" not in response.text
         script = client.get("/static/app.js").text
         assert "function timestamp(value)" in script and "[+-]\\d{2}:?\\d{2}" in script
+
+
+
+def test_login_payload_and_task_status_timestamps(tmp_path, monkeypatch):
+    with client_for(tmp_path / "planner.db", monkeypatch) as client:
+        register(client)
+        assert client.post("/api/auth/logout").status_code == 204
+        login = client.post("/api/auth/login", json={"email": "alex@example.edu", "password": "study-together-123"})
+        assert login.status_code == 200 and login.json()["username"] == "alex"
+        task = client.post("/api/tasks", json={"title": "Read chapter", "due_date": "2026-10-07"}).json()
+        assert task["started_at"] is None and task["completed_at"] is None
+        started = client.patch(f"/api/tasks/{task['id']}", json={"status": "in_progress"}).json()
+        assert started["started_at"] and started["completed_at"] is None
+        completed = client.patch(f"/api/tasks/{task['id']}", json={"status": "done"}).json()
+        assert completed["started_at"] == started["started_at"] and completed["completed_at"]
+        assert len(client.get(f"/api/tasks/{task['id']}/history").json()) == 2
+        reopened = client.patch(f"/api/tasks/{task['id']}", json={"status": "todo"}).json()
+        assert reopened["completed_at"] is None and reopened["started_at"] == started["started_at"]
+
+
+def test_username_friend_request_accept_block_and_private_access(tmp_path, monkeypatch):
+    with client_for(tmp_path / "planner.db", monkeypatch) as alice:
+        register(alice, "alice@example.edu", "Alice")
+        with TestClient(app) as bob:
+            register(bob, "bobby@example.edu", "Bobby")
+            search = alice.get("/api/people/search?q=bob").json()
+            assert search == [{"id": 2, "name": "Bobby", "username": "bobby"}]
+            assert alice.get("/api/people/search?q=%%%").json() == []
+            assert "email" not in search[0]
+            assert alice.patch("/api/profile", json={"name": "Alice", "username": "BOBBY"}).status_code == 409
+            request = alice.post("/api/friend-requests", json={"username": "@bobby"})
+            assert request.status_code == 201
+            incoming = bob.get("/api/friend-requests").json()
+            assert incoming[0]["direction"] == "incoming" and incoming[0]["status"] == "pending"
+            assert bob.post(f"/api/friend-requests/{request.json()['id']}/accept").json()["status"] == "accepted"
+            conversation = alice.post("/api/direct/conversations", json={"recipient_id": 2})
+            assert conversation.status_code == 201
+            conversation_id = conversation.json()["id"]
+            assert bob.post(f"/api/direct/conversations/{conversation_id}/messages", json={"body": "Study together?"}).status_code == 201
+            assert alice.post(f"/api/friend-requests/{request.json()['id']}/block").json()["status"] == "blocked"
+            assert alice.get(f"/api/direct/conversations/{conversation_id}/messages").status_code == 404
+            assert bob.post("/api/direct/conversations", json={"recipient_id": 1}).status_code == 404
+
+
+def test_group_message_edit_delete_pin_authorization(tmp_path, monkeypatch):
+    with client_for(tmp_path / "planner.db", monkeypatch) as owner:
+        register(owner)
+        project = owner.post("/api/projects", json={"name": "Study crew"}).json()
+        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email": "sam@example.edu"}).json()
+        with TestClient(app) as editor:
+            register(editor, "sam@example.edu", "Sam")
+            editor.post(f"/api/invitations/{invite['token']}/accept")
+            msg = editor.post(f"/api/projects/{project['id']}/messages", json={"body": "First draft"}).json()
+            assert owner.patch(f"/api/projects/{project['id']}/messages/{msg['id']}", json={"body": "Changed by owner"}).status_code == 403
+            edited = editor.patch(f"/api/projects/{project['id']}/messages/{msg['id']}", json={"body": "Revised draft"})
+            assert edited.status_code == 200 and edited.json()["edited_at"]
+            assert editor.post(f"/api/projects/{project['id']}/messages/{msg['id']}/pin").status_code == 403
+            assert owner.post(f"/api/projects/{project['id']}/messages/{msg['id']}/pin").status_code == 200
+            assert owner.get(f"/api/projects/{project['id']}/messages").json()[0]["pinned_at"]
+            assert editor.delete(f"/api/projects/{project['id']}/messages/{msg['id']}").status_code == 204
+            assert owner.get(f"/api/projects/{project['id']}/messages").json() == []
+
+
+
+def test_legacy_account_gets_unique_handle_without_fabricated_task_dates(tmp_path, monkeypatch):
+    path = tmp_path / "legacy-users.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT NOT NULL UNIQUE COLLATE NOCASE,name TEXT NOT NULL,password_hash TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT (strftime('%%Y-%%m-%%dT%%H:%%M:%%SZ','now')))")
+    con.execute("INSERT INTO users(email,name,password_hash,created_at) VALUES('legacy.student@example.edu','Legacy Student','legacy-hash','old-created')")
+    con.execute("CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,course TEXT NOT NULL DEFAULT '',due_date TEXT NOT NULL,priority TEXT NOT NULL,status TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL DEFAULT 'old-created',updated_at TEXT NOT NULL DEFAULT 'old-updated')")
+    con.execute("INSERT INTO tasks(title,due_date,priority,status) VALUES('Old assignment','2025-09-01','medium','done')")
+    con.commit(); con.close()
+    with client_for(path, monkeypatch) as client:
+        register(client, "new.student@example.edu", "New Student")
+        con = sqlite3.connect(path)
+        legacy_username = con.execute("SELECT username FROM users WHERE email='legacy.student@example.edu'").fetchone()[0]
+        task_columns = {row[1] for row in con.execute("PRAGMA table_info(tasks)")}
+        dates = con.execute("SELECT started_at,completed_at FROM tasks WHERE id=1").fetchone()
+        con.close()
+        assert legacy_username == "legacy.student"
+        assert {"started_at", "completed_at"}.issubset(task_columns)
+        assert dates == (None, None)
+
+
+def test_invitation_expiration_is_enforced(tmp_path, monkeypatch):
+    path = tmp_path / "planner.db"
+    with client_for(path, monkeypatch) as owner:
+        register(owner)
+        project = owner.post("/api/projects", json={"name": "Review group"}).json()
+        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email": "late@example.edu"}).json()
+        con = sqlite3.connect(path)
+        con.execute("UPDATE invitations SET expires_at='2000-01-01T00:00:00Z'")
+        con.commit(); con.close()
+        with TestClient(app) as late:
+            register(late, "late@example.edu", "Late Student")
+            assert late.post("/api/invitations/accept", json={"token": invite['token']}).status_code == 404

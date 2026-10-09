@@ -10,6 +10,7 @@ class RequestModel(BaseModel):
 
 class Register(RequestModel):
     email: EmailStr
+    username: str = Field(min_length=3, max_length=24, pattern=r"^[A-Za-z0-9._-]+$")
     name: str = Field(min_length=1, max_length=80)
     password: str = Field(min_length=10, max_length=200)
 
@@ -21,6 +22,7 @@ class Login(RequestModel):
 
 class ProfileUpdate(RequestModel):
     name: str = Field(min_length=1, max_length=80)
+    username: str | None = Field(default=None, min_length=3, max_length=24, pattern=r"^[A-Za-z0-9._-]+$")
 
 
 class PasswordUpdate(RequestModel):
@@ -40,6 +42,14 @@ class InviteCreate(RequestModel):
 
 class MessageCreate(RequestModel):
     body: str = Field(min_length=1, max_length=2000)
+
+
+class MessageUpdate(RequestModel):
+    body: str = Field(min_length=1, max_length=2000)
+
+
+class FriendRequestCreate(RequestModel):
+    username: str = Field(min_length=3, max_length=24)
 
 
 class InviteAccept(RequestModel):
