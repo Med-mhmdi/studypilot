@@ -38,9 +38,27 @@ class ProjectCreate(RequestModel):
     description: str = Field(default="", max_length=2000)
 
 
+class NotificationAction(RequestModel):
+    action: str = Field(pattern=r"^(read|unread|delete)$")
+    ids: list[int] = Field(default_factory=list, max_length=50)
+
+
+class ProjectUpdate(RequestModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+
+
+class MemberRoleUpdate(RequestModel):
+    role: str = Field(pattern=r"^(student|admin)$")
+
+
+class OwnershipTransfer(RequestModel):
+    user_id: int = Field(gt=0)
+
+
 class InviteCreate(RequestModel):
     email: EmailStr
-    role: str = Field(default="editor", pattern="^(editor|viewer)$")
+    role: str = Field(default="student", pattern="^(student|editor|viewer)$")
 
 
 class MessageCreate(RequestModel):

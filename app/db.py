@@ -55,7 +55,7 @@ def initialize() -> None:
                 con.execute("UPDATE users SET username=? WHERE id=?", (candidate, row["id"]))
         con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)")
         user_columns = {row["name"] for row in con.execute("PRAGMA table_info(users)")}
-        for column, definition in (("avatar", "TEXT NOT NULL DEFAULT 'violet'"), ("bio", "TEXT NOT NULL DEFAULT ''"), ("theme", "TEXT NOT NULL DEFAULT 'light'")):
+        for column, definition in (("avatar", "TEXT NOT NULL DEFAULT 'violet'"), ("bio", "TEXT NOT NULL DEFAULT ''"), ("theme", "TEXT NOT NULL DEFAULT 'light'"), ("profile_photo", "TEXT")):
             if column not in user_columns:
                 con.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
         con.execute("""CREATE TABLE IF NOT EXISTS projects (
@@ -105,9 +105,18 @@ def initialize() -> None:
             project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             role TEXT NOT NULL CHECK(role IN ('owner','editor','viewer')),
+            role_v6 TEXT CHECK(role_v6 IN ('owner','admin','student')),
+            legacy_readonly INTEGER NOT NULL DEFAULT 0 CHECK(legacy_readonly IN (0,1)),
             joined_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
             PRIMARY KEY(project_id,user_id)
         )""")
+        # Add the new permission model in place. Keep the legacy role column and all membership rows.
+        member_columns = {row["name"] for row in con.execute("PRAGMA table_info(project_members)")}
+        if "role_v6" not in member_columns:
+            con.execute("ALTER TABLE project_members ADD COLUMN role_v6 TEXT CHECK(role_v6 IN ('owner','admin','student'))")
+        if "legacy_readonly" not in member_columns:
+            con.execute("ALTER TABLE project_members ADD COLUMN legacy_readonly INTEGER NOT NULL DEFAULT 0 CHECK(legacy_readonly IN (0,1))")
+        con.execute("UPDATE project_members SET role_v6=CASE role WHEN 'owner' THEN 'owner' ELSE 'student' END,legacy_readonly=CASE WHEN role='viewer' THEN 1 ELSE legacy_readonly END WHERE role_v6 IS NULL")
         con.execute("""CREATE TABLE IF NOT EXISTS milestones (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -161,6 +170,8 @@ def initialize() -> None:
         direct_columns = {row["name"] for row in con.execute("PRAGMA table_info(direct_messages)")}
         if "edited_at" not in direct_columns: con.execute("ALTER TABLE direct_messages ADD COLUMN edited_at TEXT")
         if "deleted_at" not in direct_columns: con.execute("ALTER TABLE direct_messages ADD COLUMN deleted_at TEXT")
+        if "pinned_at" not in direct_columns: con.execute("ALTER TABLE direct_messages ADD COLUMN pinned_at TEXT")
+        if "pinned_by" not in direct_columns: con.execute("ALTER TABLE direct_messages ADD COLUMN pinned_by INTEGER REFERENCES users(id) ON DELETE SET NULL")
         con.execute("""CREATE TABLE IF NOT EXISTS activity (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,

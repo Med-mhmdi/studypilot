@@ -19,6 +19,7 @@ let lastDirectMessageId = 0;
 let activeGroupChatId = null;
 let showFullArchive = false;
 let boardMetric = '';
+let activeStatus = 'todo';
 
 function showMessage(message, type = 'error') {
   appMessage.textContent = message;
@@ -92,7 +93,7 @@ function setTheme(theme) {
 }
 
 function avatarLabel(profile) { return ({ violet: '✦', ocean: '◈', mint: '✿', coral: '●', sun: '☼' })[profile?.avatar] || (profile?.name || 'S').trim().slice(0, 1).toUpperCase(); }
-function setAvatar(node, profile) { node.textContent = avatarLabel(profile); node.dataset.avatar = profile?.avatar || 'violet'; }
+function setAvatar(node, profile) { node.textContent = avatarLabel(profile); node.dataset.avatar = profile?.avatar || 'violet';const imageUrl=profile?.profile_photo?(Number(profile.id)===Number(user?.id)?'/api/profile/photo':`/api/people/${profile.id}/photo`):'';node.style.backgroundImage=imageUrl?`url("${imageUrl}?v=${profile.id}")`:''; if(imageUrl)node.style.color='transparent';else node.style.color=''; }
 
 $('#theme-toggle').addEventListener('click', async () => { const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; setTheme(theme); if (user) { try { user = await patch('/api/profile', { name: user.name, theme }); } catch (error) { showMessage(error.message); } } });
 setTheme(localStorage.getItem('studypilot-theme') === 'dark' ? 'dark' : 'light');
@@ -148,7 +149,6 @@ async function boot() {
 }
 
 async function startApp() {
-  $('#account-name').textContent = user.name;
   setAvatar($('#avatar'), user);
   setTheme(user.theme || localStorage.getItem('studypilot-theme') || 'light');
   showMessage('');
@@ -254,43 +254,62 @@ function renderDashboard() {
 function filterTasks(items) {
   const query = $('#task-search').value.trim().toLocaleLowerCase();
   const course = $('#course-filter').value;
-  return items.filter((task) => (!course || task.course === course) && (!query || `${task.title} ${task.course} ${task.project_name || ''}`.toLocaleLowerCase().includes(query)));
+  const scope = $('#scope-filter')?.value || 'all';
+  return items.filter((task) => {
+    const mine = Number(task.owner_id) === Number(user?.id) || task.assignees?.some((person) => Number(person.id) === Number(user?.id));
+    return (!course || task.course === course) && (scope === 'all' || (scope === 'mine' ? mine : Boolean(task.project_id))) && (!query || `${task.title} ${task.course} ${task.project_name || ''}`.toLocaleLowerCase().includes(query));
+  });
 }
 
 function updateDashboardBoard() {
   const filtered = filterTasks(tasks);
-  const statusFiltered = filtered.filter((task) => {
-    if (boardMetric === 'up-next') return task.status !== 'done' && dateOnly(task.due_date) >= todayLocal();
-    if (boardMetric === 'overdue') return isOverdue(task);
-    if (boardMetric === 'in_progress' || boardMetric === 'done') return task.status === boardMetric;
-    return true;
-  });
-  const done = statusFiltered.filter((task) => task.status === 'done').sort((a,b) => (b.completed_at || b.updated_at || '').localeCompare(a.completed_at || a.updated_at || ''));
-  const shownDone = showFullArchive || $('#task-search').value.trim() ? done : done.slice(0, 15);
-  const displayed = statusFiltered.filter((task) => task.status !== 'done').concat(shownDone);
+  const done = filtered.filter((task) => task.status === 'done').sort((a,b) => (b.completed_at || b.updated_at || '').localeCompare(a.completed_at || a.updated_at || ''));
+  const overdue = filtered.filter(isOverdue);
+  const statusCounts = { todo: filtered.filter(task => task.status === 'todo').length, in_progress: filtered.filter(task => task.status === 'in_progress').length, done: done.length, overdue: overdue.length };
+  $('#count-todo').textContent = statusCounts.todo;
+  $('#count-doing').textContent = statusCounts.in_progress;
+  $('#count-done').textContent = statusCounts.done;
+  $('#count-overdue').textContent = statusCounts.overdue;
+  $$('.status-tab').forEach(tab => { const selected = tab.dataset.statusTab === activeStatus; tab.classList.toggle('active', selected); tab.setAttribute('aria-selected', String(selected)); });
+  const previews = $('#status-previews'); previews.replaceChildren();
+  for (const [key, label, count] of [['todo','To Do',statusCounts.todo],['in_progress','Doing',statusCounts.in_progress],['done','Done',statusCounts.done],['overdue','Overdue',statusCounts.overdue]]) {
+    if (key === activeStatus) continue;
+    const button = document.createElement('button'); button.className='status-preview'; button.type='button';
+    const name=document.createElement('span');name.textContent=label;const value=document.createElement('strong');value.textContent=count;
+    const hint=document.createElement('small');hint.textContent=`Open ${label.toLowerCase()} work`;
+    button.append(name,value,hint);button.addEventListener('click',()=>{activeStatus=key;boardMetric='';updateDashboardBoard();});previews.append(button);
+  }
+  const statusFiltered = activeStatus === 'overdue' ? overdue : filtered.filter(task => task.status === activeStatus);
+  const doneShown = statusFiltered.filter(task => task.status === 'done');
+  const shownDone = showFullArchive || $('#task-search').value.trim() ? doneShown : doneShown.slice(0, 15);
+  const displayed = activeStatus === 'done' ? shownDone : statusFiltered;
   const hasMatches = displayed.length > 0;
-  renderBoard($('#task-board'), displayed, null);
+  renderBoard($('#task-board'), displayed, null, activeStatus);
   $('#task-board').hidden = !hasMatches;
   $('#task-empty').hidden = hasMatches;
-  const searching = $('#task-search').value.trim() || $('#course-filter').value;
+  const searching = $('#task-search').value.trim() || $('#course-filter').value || $('#scope-filter').value !== 'all';
   $('#task-empty h3').textContent = tasks.length && (searching || boardMetric) ? 'No matching assignments' : 'No assignments here yet';
   $('#task-empty p').textContent = tasks.length && (searching || boardMetric) ? 'Try another search or choose a different summary card.' : 'Add an assignment to get started.';
   $('#empty-add').textContent = tasks.length && (searching || boardMetric) ? 'Clear search and filters' : '＋ Add assignment';
   const note = $('#archive-note');
-  if (note) { note.hidden = !done.length; note.textContent = `${shownDone.length} of ${done.length} completed assignments shown. `; const toggle = document.createElement('button'); toggle.className='text-button'; toggle.textContent = showFullArchive ? 'Show recent only' : 'Search full history / show all'; toggle.addEventListener('click', () => { showFullArchive = !showFullArchive; updateDashboardBoard(); }); note.append(toggle); }
+  if (note) { note.hidden = activeStatus !== 'done' || !doneShown.length; note.textContent = `${shownDone.length} of ${doneShown.length} completed assignments shown. `; const toggle = document.createElement('button'); toggle.className='text-button'; toggle.textContent = showFullArchive ? 'Show recent only' : 'Show full history'; toggle.addEventListener('click', () => { showFullArchive = !showFullArchive; updateDashboardBoard(); }); note.append(toggle); }
 }
 
 $('#task-search').addEventListener('input', updateDashboardBoard);
 $('#course-filter').addEventListener('change', updateDashboardBoard);
+$('#scope-filter').addEventListener('change', updateDashboardBoard);
+$$('.status-tab').forEach(tab => tab.addEventListener('click', () => { activeStatus=tab.dataset.statusTab; boardMetric=''; updateDashboardBoard(); }));
 $('#new-task').addEventListener('click', () => openNewTask(null));
 $('#board-new-task').addEventListener('click', () => openNewTask(null));
-$$('.metric-card').forEach((card) => card.addEventListener('click', () => { location.hash = `#/board?filter=${card.dataset.metric}`; }));
+$$('.metric-card').forEach((card) => card.addEventListener('click', () => { const filter=card.dataset.metric === 'in_progress' ? 'doing' : card.dataset.metric; location.hash = `#/board?filter=${filter}`; }));
 
 function renderBoardView() {
   const courses = [...new Set(tasks.map((task) => task.course).filter(Boolean))].sort();
   const filter = $('#course-filter'); const chosen = filter.value;
   filter.replaceChildren(new Option('All courses', ''), ...courses.map((course) => new Option(course, course)));
   filter.value = courses.includes(chosen) ? chosen : '';
+  const routeFilter = new URLSearchParams(location.hash.split('?')[1] || '').get('filter') || '';
+  activeStatus = ({'doing':'in_progress','in_progress':'in_progress','done':'done','overdue':'overdue','up-next':'todo','todo':'todo'})[routeFilter] || activeStatus || 'todo';
   updateDashboardBoard();
 }
 $('#empty-add').addEventListener('click', () => {
@@ -300,10 +319,11 @@ $('#empty-add').addEventListener('click', () => {
 });
 
 const statusNames = { todo: 'To do', in_progress: 'In progress', done: 'Done' };
-function renderBoard(board, items, project) {
+function renderBoard(board, items, project, onlyStatus = null) {
   board.replaceChildren();
   board.className = 'task-board';
-  for (const [status, title] of Object.entries(statusNames)) {
+  const statuses = Object.entries(statusNames).filter(([status]) => !onlyStatus || (onlyStatus === 'overdue' ? items.some(task => task.status === status) : status === onlyStatus));
+  for (const [status, title] of statuses) {
     const lane = document.createElement('section');
     lane.className = `kanban-lane lane-${status}`;
     lane.dataset.status = status;
@@ -318,7 +338,7 @@ function renderBoard(board, items, project) {
     if (!cards.length) { const empty = document.createElement('p'); empty.className = 'lane-empty'; empty.textContent = 'Drop work here'; content.append(empty); }
     cards.forEach((task) => content.append(makeTaskCard(task, project)));
     lane.append(heading, content);
-    lane.addEventListener('dragover', (event) => { if (!project || project.role !== 'viewer') { event.preventDefault(); lane.classList.add('drop-target'); } });
+    lane.addEventListener('dragover', (event) => { if ((!project || !['viewer'].includes(project.role)) && onlyStatus !== 'overdue') { event.preventDefault(); lane.classList.add('drop-target'); } });
     lane.addEventListener('dragleave', () => lane.classList.remove('drop-target'));
     lane.addEventListener('drop', async (event) => {
       event.preventDefault(); lane.classList.remove('drop-target');
@@ -333,13 +353,18 @@ function renderBoard(board, items, project) {
 function makeTaskCard(task, project) {
   const card = document.createElement('article');
   card.className = `task-card priority-card-${task.priority}`;
-  card.draggable = !project || project.role !== 'viewer';
+  const canEdit = project?.role !== 'viewer' && !project?.legacy_readonly;
+  card.draggable = canEdit;
+  card.tabIndex = canEdit ? 0 : -1;
+  if (canEdit) card.setAttribute('aria-keyshortcuts','ArrowLeft ArrowRight');
+  card.addEventListener('keydown', (event) => { if (!canEdit || !['ArrowLeft','ArrowRight'].includes(event.key)) return; event.preventDefault(); const order=['todo','in_progress','done'];const pos=order.indexOf(task.status);const next=order[Math.max(0,Math.min(order.length-1,pos+(event.key==='ArrowRight'?1:-1)))];if(next!==task.status)changeTaskStatus(task,next,project); });
   card.addEventListener('dragstart', (event) => { event.dataTransfer.setData('text/plain', String(task.id)); event.dataTransfer.effectAllowed = 'move'; });
   const titleLine = document.createElement('div'); titleLine.className = 'task-card-title';
-  const canEdit = project?.role !== 'viewer';
   const title = document.createElement('button'); title.className = 'task-title'; title.textContent = task.title; title.disabled = !canEdit; title.addEventListener('click', () => openEditTask(task, project));
-  const menu = document.createElement('button'); menu.className = 'row-menu'; menu.setAttribute('aria-label', `Edit ${task.title}`); menu.textContent = '···'; menu.disabled = !canEdit; menu.addEventListener('click', () => openEditTask(task, project));
-  titleLine.append(title, menu);
+  const topActions=document.createElement('div');topActions.className='task-top-actions';
+  topActions.append(makeTag(task.project_id ? 'Group' : 'Personal',`scope-pill ${task.project_id?'group':'personal'}`));
+  const menu = document.createElement('button'); menu.className = 'row-menu'; menu.setAttribute('aria-label', `Edit ${task.title}`); menu.textContent = '···'; menu.disabled = !canEdit; menu.addEventListener('click', () => openEditTask(task, project));topActions.append(menu);
+  titleLine.append(title, topActions);
   const context = document.createElement('div'); context.className = 'task-context';
   if (task.project_name && !project) context.append(makeTag(task.project_name, 'project-tag'));
   if (task.course) context.append(makeTag(task.course, 'course-tag'));
@@ -353,18 +378,12 @@ function makeTaskCard(task, project) {
     if (start) { const duration = document.createElement('small'); duration.className='work-duration'; const hours=Math.max(0,Math.round((end-start)/3600000)); duration.textContent = end ? `Work time · ${hours < 24 ? `${hours} hours` : `${Math.round(hours/24)} days`}` : `Started · ${formatTimestamp(task.started_at)}`; assignees.append(document.createElement('br'),duration); }
   }
   const actions = document.createElement('div'); actions.className = 'task-card-actions';
-  const move = document.createElement('button'); move.className = 'move-button';
-  const nextStatus = task.status === 'todo' ? 'in_progress' : task.status === 'in_progress' ? 'done' : 'in_progress';
-  move.textContent = task.status === 'todo' ? 'Start working' : task.status === 'in_progress' ? 'Mark done' : 'Reopen';
-  move.setAttribute('aria-label', `${move.textContent}: ${task.title}`);
-  move.disabled = project?.role === 'viewer';
-  move.addEventListener('click', () => changeTaskStatus(task, nextStatus, project));
-  const status = document.createElement('select'); status.className = 'task-status-select'; status.setAttribute('aria-label', `Status for ${task.title}`); status.disabled = !canEdit;
-  Object.entries(statusNames).forEach(([value, name]) => status.add(new Option(name, value)));
-  status.value = task.status; status.addEventListener('change', () => changeTaskStatus(task, status.value, project));
+  const moveMenu=document.createElement('details');moveMenu.className='task-move-menu';moveMenu.hidden=!canEdit;
+  const summary=document.createElement('summary');summary.textContent='Move';summary.setAttribute('aria-label',`Move ${task.title}`);moveMenu.append(summary);
+  Object.entries(statusNames).forEach(([value,name])=>{if(value===task.status)return;const option=document.createElement('button');option.type='button';option.textContent=`Move to ${name}`;option.addEventListener('click',()=>{moveMenu.open=false;changeTaskStatus(task,value,project);});moveMenu.append(option);});
   const comment = document.createElement('button'); comment.className = 'text-button'; comment.textContent = 'Comments'; comment.addEventListener('click', () => toggleComments(card, task, project));
   const historyButton=document.createElement('button');historyButton.className='text-button';historyButton.textContent='History';historyButton.addEventListener('click',()=>toggleTaskHistory(card,task));
-  actions.append(status, move, comment, historyButton);
+  actions.append(moveMenu, comment, historyButton);
   card.append(titleLine, context, deadline, assignees, actions);
   return card;
 }
@@ -392,9 +411,13 @@ function openNewTask(project) {
   taskForm.reset();
   $('#task-id').value = '';
   $('#task-dialog-title').textContent = project ? `New assignment · ${project.name}` : 'New assignment';
-  $('#status-wrap').hidden = true;
   $('#delete-task').hidden = true;
   $('#form-error').textContent = '';
+  $('#scope-wrap').hidden = Boolean(project);
+  $('#assignment-scope').value = project ? 'group' : 'personal';
+  const groupSelect=$('#assignment-group');groupSelect.replaceChildren(...projects.filter(item=>item.role!=='viewer').map(item=>new Option(item.name,item.id)));
+  $('#assignment-group-wrap').hidden = !project;
+  if(project)groupSelect.value=String(project.id);
   $('#assignee-wrap').hidden = !project;
   populateAssignees(project, []);
   const now = new Date();
@@ -418,33 +441,43 @@ function openEditTask(task, project) {
   taskForm.reset();
   $('#task-id').value = task.id;
   $('#task-dialog-title').textContent = 'Edit assignment';
-  $('#status-wrap').hidden = false;
+  $('#scope-wrap').hidden = true;
+  $('#assignment-group-wrap').hidden = true;
   $('#delete-task').hidden = false;
   $('#assignee-wrap').hidden = !project;
   $('#form-error').textContent = '';
-  for (const key of ['title', 'course', 'due_date', 'priority', 'status', 'description']) $(`#${key.replace('_', '-')}`).value = task[key] ?? '';
+  for (const key of ['title', 'course', 'due_date', 'priority', 'description']) $(`#${key.replace('_', '-')}`).value = task[key] ?? '';
+  $('#assignee-wrap').hidden = !project;
   populateAssignees(project, task.assignees?.map((person) => person.id) || []);
-  taskForm.dataset.projectId = project?.id || '';
+  taskForm.dataset.projectId = project?.id || task.project_id || '';
   $('#task-dialog').showModal();
 }
+
+$('#assignment-scope').addEventListener('change', async()=>{
+  const isGroup=$('#assignment-scope').value==='group';$('#assignment-group-wrap').hidden=!isGroup;$('#assignee-wrap').hidden=!isGroup;
+  if(!isGroup){taskForm.dataset.projectId='';return;}
+  const id=Number($('#assignment-group').value);const selected=projects.find(item=>item.id===id);if(!selected)return;
+  try{const project=await api(`/api/projects/${id}`);taskForm.dataset.projectId=String(id);populateAssignees(project,[]);}catch(error){showMessage(error.message);}
+});
+$('#assignment-group').addEventListener('change',async()=>{const id=Number($('#assignment-group').value);if(!id)return;try{const project=await api(`/api/projects/${id}`);taskForm.dataset.projectId=String(id);populateAssignees(project,[]);}catch(error){showMessage(error.message);}});
 
 taskForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const id = $('#task-id').value;
   const projectId = taskForm.dataset.projectId;
   const payload = Object.fromEntries(new FormData(taskForm).entries());
-  if (!id) delete payload.status;
-  else payload.status = $('#status').value;
-  if (projectId) {
-    if (!id) payload.project_id = Number(projectId);
+  delete payload.assignment_scope;
+  if ($('#assignment-scope').value === 'group' && !id) {
+    if (!projectId) { $('#form-error').textContent='Choose a study group.'; return; }
+    payload.project_id = Number(projectId);
     payload.assignee_ids = $$('#assignees option:checked').map((option) => Number(option.value));
   }
   $('#form-error').textContent = '';
   try {
     await api(id ? `/api/tasks/${id}` : '/api/tasks', { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
     $('#task-dialog').close();
-    await loadTasks(projectId || null);
-    if (projectId) await loadProjectBoard(activeProject);
+    await loadTasks();
+    if (routeFromHash().name === 'groups' && routeFromHash().id) await renderProject(routeFromHash().id);
     else if (routeFromHash().name === 'board') renderBoardView();
     else renderDashboard();
   } catch (error) { $('#form-error').textContent = error.message; }
@@ -458,9 +491,10 @@ $('#delete-task').addEventListener('click', async () => {
   try {
     await api(`/api/tasks/${id}`, { method: 'DELETE' });
     $('#task-dialog').close();
-    const projectId = taskForm.dataset.projectId;
-    await loadTasks(projectId || null);
-    if (projectId) await loadProjectBoard(activeProject); else if (routeFromHash().name === 'board') renderBoardView(); else renderDashboard();
+    await loadTasks();
+    if (routeFromHash().name === 'groups' && routeFromHash().id) await renderProject(routeFromHash().id);
+    else if (routeFromHash().name === 'board') renderBoardView();
+    else renderDashboard();
   } catch (error) { $('#form-error').textContent = error.message; }
 });
 
@@ -506,12 +540,13 @@ function renderProjects() {
   });
 }
 
-$('#new-project').addEventListener('click', () => { $('#project-form').reset(); $('#project-error').textContent = ''; $('#project-dialog').showModal(); });
+$('#new-project').addEventListener('click', () => { $('#project-form').reset(); $('#project-form').dataset.id=''; $('#project-dialog-title').textContent='Start a study group'; $('#save-group').textContent='Create group'; $('#delete-group').hidden=true; $('#project-error').textContent = ''; $('#project-dialog').showModal(); });
 $('#project-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  try { const project = await post('/api/projects', Object.fromEntries(new FormData(event.currentTarget))); $('#project-dialog').close(); await loadProjects(); location.hash = `#/groups/${project.id}`; }
+  try { const id=event.currentTarget.dataset.id;const payload=Object.fromEntries(new FormData(event.currentTarget));const project=id?await patch(`/api/projects/${id}`,payload):await post('/api/projects',payload); $('#project-dialog').close(); await loadProjects(); location.hash = `#/groups/${project.id}`; }
   catch (error) { $('#project-error').textContent = error.message; }
 });
+$('#delete-group').addEventListener('click',async()=>{if(!activeProject||!confirm(`Delete “${activeProject.name}” and all its shared assignments, messages, and history? This cannot be undone.`))return;try{await api(`/api/projects/${activeProject.id}`,{method:'DELETE'});$('#project-dialog').close();location.hash='#/groups';await loadProjects();}catch(error){$('#project-error').textContent=error.message;}});
 
 $('#join-group-open').addEventListener('click', () => { $('#join-form').reset(); $('#join-error').textContent = ''; $('#join-dialog').showModal(); });
 $('#join-form').addEventListener('submit', async (event) => {
@@ -523,7 +558,7 @@ $('#join-form').addEventListener('submit', async (event) => {
 
 async function loadJoinRequests(projectId) {
   const box=$('#group-join-requests'); box.replaceChildren();
-  if(activeProject?.role!=='owner'){box.textContent='Only group owners can review access requests.';return;}
+  if(!['owner','admin'].includes(activeProject?.role)){box.textContent='Only group admins can review access requests.';return;}
   try { const requests=await api(`/api/projects/${projectId}/join-requests`); if(!requests.length){box.textContent='No pending requests.';return;}
     requests.forEach((item)=>{const row=document.createElement('article');row.className='person-card';const info=document.createElement('span');info.className='person-copy';const name=document.createElement('strong');name.textContent=item.name;const handle=document.createElement('small');handle.textContent=`@${item.username} · ${formatTimestamp(item.created_at)}`;info.append(name,handle);row.append(info);['approve','reject','block'].forEach((action)=>{const b=document.createElement('button');b.className=action==='approve'?'primary-button':'secondary-button';b.textContent=action[0].toUpperCase()+action.slice(1);b.addEventListener('click',async()=>{try{await post(`/api/projects/${projectId}/join-requests/${item.id}/${action}`,{});await loadJoinRequests(projectId);await loadProjects();await loadNotifications();}catch(error){showMessage(error.message);}});row.append(b);});box.append(row);});
   } catch(error){box.textContent=error.message;}
@@ -541,16 +576,17 @@ async function renderProject(projectId) {
   const titlebox = document.createElement('div'); const title = document.createElement('h2'); title.textContent = activeProject.name; const description = document.createElement('p'); description.textContent = activeProject.description || 'A shared space for your next big idea.'; titlebox.append(title, description);
   const actions = document.createElement('div'); actions.className = 'page-actions';
   const addTask = document.createElement('button'); addTask.className = 'primary-button'; addTask.textContent = '＋ Assignment'; addTask.hidden = activeProject.role === 'viewer'; addTask.addEventListener('click', () => openNewTask(activeProject));
-  const invite = document.createElement('button'); invite.className = 'secondary-button'; invite.textContent = 'Invite members'; invite.hidden = activeProject.role !== 'owner'; invite.addEventListener('click', async () => { $('#group-join-code').textContent = activeProject.join_code; await loadJoinRequests(activeProject.id); $('#invite-dialog').showModal(); });
+  const editGroup=document.createElement('button');editGroup.className='secondary-button';editGroup.textContent='Edit group';editGroup.hidden=!['owner','admin'].includes(activeProject.role);editGroup.addEventListener('click',()=>{const form=$('#project-form');form.reset();form.dataset.id=String(activeProject.id);form.elements.name.value=activeProject.name;form.elements.description.value=activeProject.description||'';$('#project-dialog-title').textContent='Edit group';$('#save-group').textContent='Save changes';$('#delete-group').hidden=activeProject.role!=='owner';$('#project-error').textContent='';$('#project-dialog').showModal();});
+  const invite = document.createElement('button'); invite.className = 'secondary-button'; invite.textContent = 'Invite members'; invite.hidden = !['owner','admin'].includes(activeProject.role); invite.addEventListener('click', async () => { $('#group-join-code').textContent = activeProject.join_code; await loadJoinRequests(activeProject.id); $('#invite-dialog').showModal(); });
   const openChat = document.createElement('a'); openChat.className = 'secondary-button'; openChat.href = `#/messages?group=${activeProject.id}`; openChat.textContent = 'Open group chat';
-  actions.append(addTask, invite, openChat); top.append(titlebox, actions); head.append(back, top); pane.append(head);
+  actions.append(addTask, editGroup, invite, openChat); top.append(titlebox, actions); head.append(back, top); pane.append(head);
   const layout = document.createElement('div'); layout.className = 'group-workspace-grid';
   const plan = document.createElement('section'); plan.className = 'group-plan';
   const taskHeading = document.createElement('div'); taskHeading.className = 'subsection-heading'; const taskTitle = document.createElement('h3'); taskTitle.textContent = 'Shared assignments'; taskHeading.append(taskTitle); plan.append(taskHeading);
   const groupBoard = document.createElement('div'); groupBoard.id = 'group-task-board'; plan.append(groupBoard);
   const sidebar = document.createElement('aside'); sidebar.className = 'group-sidebar';
   const memberPanel = document.createElement('section'); memberPanel.className = 'group-panel'; const memberTitle = document.createElement('h3'); memberTitle.textContent = `Your team · ${activeProject.members.length}`; memberPanel.append(memberTitle);
-  activeProject.members.forEach((member) => { const row = document.createElement('div'); row.className = 'member-row'; const avatar = document.createElement('span'); avatar.className = 'avatar small-avatar'; setAvatar(avatar,member); const name = document.createElement('span'); name.className = 'member-name'; name.textContent = member.name + (member.id === user.id ? ' · You' : ''); const role = document.createElement('small'); role.textContent = member.role; row.append(avatar, name, role); if (member.id !== user.id) { const dm = document.createElement('button'); dm.className = 'text-button'; dm.textContent = 'Message'; dm.setAttribute('aria-label', `Message ${member.name}`); dm.addEventListener('click', () => openDirectConversation(member.id)); row.append(dm); } memberPanel.append(row); });
+  activeProject.members.forEach((member) => { const row = document.createElement('div'); row.className = 'member-row'; const avatar = document.createElement('span'); avatar.className = 'avatar small-avatar'; setAvatar(avatar,member); const name = document.createElement('span'); name.className = 'member-name'; name.textContent = member.name + (member.id === user.id ? ' · You' : ''); const role = document.createElement('small'); role.textContent = member.legacy_readonly ? 'Student · read only' : member.role; row.append(avatar, name, role); if (member.id !== user.id) { const dm = document.createElement('button'); dm.className = 'text-button'; dm.textContent = 'Message'; dm.setAttribute('aria-label', `Message ${member.name}`); dm.addEventListener('click', () => openDirectConversation(member.id)); row.append(dm);if(activeProject.role==='owner'&&member.role!=='owner'){const change=document.createElement('button');change.className='text-button';change.textContent=member.role==='admin'?'Make student':'Make admin';change.addEventListener('click',async()=>{try{await patch(`/api/projects/${activeProject.id}/members/${member.id}`,{role:member.role==='admin'?'student':'admin'});await renderProject(activeProject.id);}catch(error){showMessage(error.message);}});const remove=document.createElement('button');remove.className='text-button';remove.textContent='Remove';remove.addEventListener('click',async()=>{if(!confirm(`Remove ${member.name} from this group?`))return;try{await api(`/api/projects/${activeProject.id}/members/${member.id}`,{method:'DELETE'});await renderProject(activeProject.id);}catch(error){showMessage(error.message);}});row.append(change,remove);const transfer=document.createElement('button');transfer.className='text-button';transfer.textContent='Make owner';transfer.addEventListener('click',async()=>{if(!confirm(`Transfer ownership to ${member.name}? You will become an admin.`))return;try{await post(`/api/projects/${activeProject.id}/transfer-owner`,{user_id:member.id});await renderProject(activeProject.id);}catch(error){showMessage(error.message);}});row.append(transfer);}} memberPanel.append(row); });
   const milestonePanel = document.createElement('section'); milestonePanel.className = 'group-panel milestones-panel'; const milestoneHead = document.createElement('div'); milestoneHead.className = 'subsection-heading'; const milestoneTitle = document.createElement('h3'); milestoneTitle.textContent = 'Milestones'; milestoneHead.append(milestoneTitle); const milestoneAdd = document.createElement('button'); milestoneAdd.className = 'text-button'; milestoneAdd.textContent = '＋ Add'; milestoneAdd.hidden = activeProject.role === 'viewer'; milestoneAdd.addEventListener('click', () => { $('#milestone-form').reset(); $('#milestone-error').textContent = ''; $('#milestone-dialog').showModal(); }); milestoneHead.append(milestoneAdd); milestonePanel.append(milestoneHead); const milestoneList = document.createElement('div'); milestoneList.id = 'milestone-list'; milestonePanel.append(milestoneList);
   sidebar.append(memberPanel, milestonePanel);
   layout.append(plan, sidebar); pane.append(layout);
@@ -601,14 +637,15 @@ function appendChatMessage(stream, message, mine) {
   const time=timestamp(message.created_at);const day=time?`${time.getFullYear()}-${time.getMonth()}-${time.getDate()}`:'unknown';const last=stream.querySelector('.message-row:last-of-type');
   if(last?.dataset.day!==day){const sep=document.createElement('div');sep.className='date-separator';sep.textContent=time?time.toLocaleDateString(undefined,{weekday:'short',month:'long',day:'numeric'}):'Earlier';stream.append(sep);}
   const article=document.createElement('article');article.className=`message-row ${mine?'mine':'incoming'} ${last&&last.dataset.sender===String(message.user_id||message.sender_id)&&last.dataset.day===day?'grouped':''} ${message.pinned_at?'is-pinned':''}`;article.dataset.messageId=message.id;article.dataset.sender=message.user_id||message.sender_id;article.dataset.day=day;
-  const avatar=document.createElement('span');avatar.className='avatar message-avatar';setAvatar(avatar,mine?user:{name:message.name||message.sender_name,avatar:message.avatar});
+  const avatar=document.createElement('span');avatar.className='avatar message-avatar';setAvatar(avatar,mine?user:{id:message.user_id||message.sender_id,name:message.name||message.sender_name,avatar:message.avatar,profile_photo:message.profile_photo});
   const box=document.createElement('div');box.className='message-content';const meta=document.createElement('div');meta.className='message-meta';meta.textContent=`${message.name||message.sender_name||'Classmate'} · ${time?time.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}):'Time unavailable'}${message.edited_at?' · edited':''}`;
   const bubble=document.createElement('p');bubble.className='message-bubble';bubble.textContent=message.deleted_at?'Message deleted':message.body||'';if(message.deleted_at)bubble.classList.add('deleted-message');box.append(meta,bubble);
   if((activeGroupChatId||activeConversation)&&!message.deleted_at){const details=document.createElement('details');details.className='message-menu';const summary=document.createElement('summary');summary.textContent='···';summary.setAttribute('aria-label','Message actions');const menu=document.createElement('div');menu.className='message-menu-items';const add=(label,fn)=>{const b=document.createElement('button');b.type='button';b.textContent=label;b.addEventListener('click',async()=>{details.open=false;await fn();});menu.append(b);};
     add('Copy message',async()=>{try{await navigator.clipboard.writeText(message.body);}catch{showMessage('Copy is unavailable in this browser.');}});
     if(mine)add('Edit message',async()=>{const next=prompt('Edit message',message.body);if(next===null)return;try{if(activeGroupChatId){await patch(`/api/projects/${activeGroupChatId}/messages/${message.id}`,{body:next.trim()});await refreshGroupThread();}else{await patch(`/api/direct/conversations/${activeConversation.id}/messages/${message.id}`,{body:next.trim()});lastDirectMessageId=0;await loadDirectMessages();}}catch(error){showMessage(error.message);}});
     if(mine)add('Delete message',async()=>{if(!confirm('Delete this message? It will remain as a deleted marker.'))return;try{if(activeGroupChatId){await api(`/api/projects/${activeGroupChatId}/messages/${message.id}`,{method:'DELETE'});await refreshGroupThread();}else{await api(`/api/direct/conversations/${activeConversation.id}/messages/${message.id}`,{method:'DELETE'});lastDirectMessageId=0;await loadDirectMessages();}}catch(error){showMessage(error.message);}});
-    if(projects.find(p=>p.id===activeGroupChatId)?.role==='owner')add(message.pinned_at?'Unpin message':'Pin message',async()=>{try{await api(`/api/projects/${activeGroupChatId}/messages/${message.id}/pin`,{method:message.pinned_at?'DELETE':'POST'});await refreshGroupThread();}catch(error){showMessage(error.message);}});
+    if(activeGroupChatId && projects.find(p=>p.id===activeGroupChatId)?.role==='owner')add(message.pinned_at?'Unpin message':'Pin message',async()=>{try{await api(`/api/projects/${activeGroupChatId}/messages/${message.id}/pin`,{method:message.pinned_at?'DELETE':'POST'});await refreshGroupThread();}catch(error){showMessage(error.message);}});
+    if(activeConversation)add(message.pinned_at?'Unpin message':'Pin message',async()=>{try{await api(`/api/direct/conversations/${activeConversation.id}/messages/${message.id}/pin`,{method:message.pinned_at?'DELETE':'POST'});await loadDirectMessages(true);}catch(error){showMessage(error.message);}});
     details.append(summary,menu);box.append(details);
   }
   if(message.pinned_at){const marker=document.createElement('span');marker.className='pinned-marker';marker.textContent='Pinned';box.append(marker);}
@@ -619,6 +656,15 @@ async function showPinnedMessages(projectId) {
   let dialog=$('#pinned-dialog');if(!dialog){dialog=document.createElement('dialog');dialog.id='pinned-dialog';dialog.innerHTML='<section class="pinned-panel"><div class="dialog-head"><h2>Pinned messages</h2><button class="icon-button" aria-label="Close">×</button></div><div id="pinned-list" class="pinned-list"></div></section>';document.body.append(dialog);$('.icon-button',dialog).addEventListener('click',()=>dialog.close());}
   const box=$('#pinned-list');box.replaceChildren();const pins=await api(`/api/projects/${projectId}/pinned-messages`);if(!pins.length)box.textContent='No pinned messages yet.';
   pins.forEach(item=>{const row=document.createElement('article');row.className='pinned-item';const body=document.createElement('p');body.textContent=item.deleted_at?'Message deleted':item.body;const meta=document.createElement('small');meta.textContent=`${item.name} · ${formatTimestamp(item.created_at)}`;const jump=document.createElement('button');jump.className='text-button';jump.textContent='Jump to message';jump.addEventListener('click',async()=>{try{let target=$(`[data-message-id="${item.id}"]`);if(!target){const message=await api(`/api/projects/${projectId}/messages/${item.id}`);appendChatMessage($('#direct-stream'),message,message.user_id===user.id);target=$(`[data-message-id="${item.id}"]`);}target?.scrollIntoView({behavior:'smooth',block:'center'});}catch(error){showMessage(error.message);}});row.append(body,meta,jump);if(projects.find(p=>p.id===projectId)?.role==='owner'){const unpin=document.createElement('button');unpin.className='text-button';unpin.textContent='Unpin';unpin.addEventListener('click',async()=>{await api(`/api/projects/${projectId}/messages/${item.id}/pin`,{method:'DELETE'});await showPinnedMessages(projectId);});row.append(unpin);}box.append(row);});dialog.showModal();
+}
+
+async function showDirectPinnedMessages(conversationId) {
+  let dialog=$('#pinned-dialog');if(!dialog){dialog=document.createElement('dialog');dialog.id='pinned-dialog';dialog.innerHTML='<section class="pinned-panel"><div class="dialog-head"><h2>Pinned messages</h2><button class="icon-button" aria-label="Close">×</button></div><div id="pinned-list" class="pinned-list"></div></section>';document.body.append(dialog);$('.icon-button',dialog).addEventListener('click',()=>dialog.close());}
+  const box=$('#pinned-list');box.replaceChildren();
+  const pins=await api(`/api/direct/conversations/${conversationId}/pinned-messages`);
+  if(!pins.length)box.textContent='No pinned messages yet.';
+  pins.forEach(item=>{const row=document.createElement('article');row.className='pinned-item';const body=document.createElement('p');body.textContent=item.deleted_at?'Message deleted':item.body;const meta=document.createElement('small');meta.textContent=`${item.sender_name} · ${formatTimestamp(item.created_at)}`;const jump=document.createElement('button');jump.className='text-button';jump.textContent='Jump to message';jump.addEventListener('click',async()=>{try{let target=$(`[data-message-id="${item.id}"]`);if(!target){const message=await api(`/api/direct/conversations/${conversationId}/messages/${item.id}`);appendChatMessage($('#direct-stream'),message,message.sender_id===user.id);target=$(`[data-message-id="${item.id}"]`);}target?.scrollIntoView({behavior:'smooth',block:'center'});dialog.close();}catch(error){showMessage(error.message);}});const unpin=document.createElement('button');unpin.className='text-button';unpin.textContent='Unpin';unpin.addEventListener('click',async()=>{await api(`/api/direct/conversations/${conversationId}/messages/${item.id}/pin`,{method:'DELETE'});await showDirectPinnedMessages(conversationId);});row.append(body,meta,jump,unpin);box.append(row);});
+  dialog.showModal();
 }
 
 $('#invite-form').addEventListener('submit', async (event) => {
@@ -696,7 +742,7 @@ function renderConversations() {
   const groups = groupThreads.filter((item) => !search || `${item.name} ${item.last_message || ''}`.toLowerCase().includes(search));
   groups.forEach((item) => { const button=document.createElement('button'); button.className=`conversation-item ${activeGroupChatId===item.project_id?'selected':''}`; const avatar=document.createElement('span'); avatar.className='avatar group-avatar'; avatar.textContent='✦'; const content=document.createElement('span'); content.className='conversation-content'; const name=document.createElement('strong'); name.textContent=item.name; const last=document.createElement('small'); last.textContent=item.last_message || 'No messages yet'; const activity=document.createElement('small'); activity.className='conversation-activity'; activity.textContent=formatTimestamp(item.last_message_at || item.created_at); content.append(name,last,activity); button.append(avatar,content); if(item.unread_count){const unread=document.createElement('span');unread.className='unread-pill';unread.textContent=item.unread_count;button.append(unread);} button.addEventListener('click',()=>openGroupConversation(item.project_id)); list.append(button); });
   const peopleLabel=document.createElement('p'); peopleLabel.className='eyebrow'; peopleLabel.textContent='DIRECT'; list.append(peopleLabel);
-  conversations.filter((item) => !search || `${item.person_name} ${item.last_message || ''}`.toLowerCase().includes(search)).forEach((conversation) => { const button = document.createElement('button'); button.className = `conversation-item ${activeConversation?.id === conversation.id ? 'selected' : ''}`; const avatar = document.createElement('span'); avatar.className = 'avatar'; setAvatar(avatar,{name:conversation.person_name,avatar:conversation.person_avatar}); const content = document.createElement('span'); content.className = 'conversation-content'; const name = document.createElement('strong'); name.textContent = conversation.person_name; const last = document.createElement('small'); last.textContent = conversation.last_message || 'No messages yet'; const activity = document.createElement('small'); activity.className = 'conversation-activity'; activity.textContent = formatTimestamp(conversation.last_message_at || conversation.created_at); content.append(name, last, activity); button.append(avatar, content); if (conversation.unread_count) { const unread = document.createElement('span'); unread.className = 'unread-pill'; unread.textContent = conversation.unread_count; button.append(unread); } button.addEventListener('click', () => openConversation(conversation.id)); list.append(button); });
+  conversations.filter((item) => !search || `${item.person_name} ${item.last_message || ''}`.toLowerCase().includes(search)).forEach((conversation) => { const button = document.createElement('button'); button.className = `conversation-item ${activeConversation?.id === conversation.id ? 'selected' : ''}`; const avatar = document.createElement('span'); avatar.className = 'avatar'; setAvatar(avatar,{id:conversation.person_id,name:conversation.person_name,avatar:conversation.person_avatar,profile_photo:conversation.person_profile_photo}); const content = document.createElement('span'); content.className = 'conversation-content'; const name = document.createElement('strong'); name.textContent = conversation.person_name; const last = document.createElement('small'); last.textContent = conversation.last_message || 'No messages yet'; const activity = document.createElement('small'); activity.className = 'conversation-activity'; activity.textContent = formatTimestamp(conversation.last_message_at || conversation.created_at); content.append(name, last, activity); button.append(avatar, content); if (conversation.unread_count) { const unread = document.createElement('span'); unread.className = 'unread-pill'; unread.textContent = conversation.unread_count; button.append(unread); } button.addEventListener('click', () => openConversation(conversation.id)); list.append(button); });
   if (!groups.length && !conversations.length) { const empty=document.createElement('p');empty.className='subtle-empty';empty.textContent='Your group and friend conversations will appear here.';list.append(empty); }
 }
 
@@ -711,7 +757,7 @@ async function renderPeople() {
   const paint = (selector, items, kind) => {
     const box = $(selector); box.replaceChildren();
     if (!items.length) { const empty=document.createElement('p');empty.className='subtle-empty';empty.textContent=kind==='incoming'?'No incoming requests.':kind==='outgoing'?'No pending requests.':kind==='friends'?'Friends you add will appear here.':kind==='blocked'?'No blocked classmates.':'Search by their unique username.';box.append(empty);return; }
-    items.forEach((item) => { const row=document.createElement('article');row.className='person-card';const avatar=document.createElement('span');avatar.className='avatar';setAvatar(avatar,item);const info=document.createElement('span');info.className='person-copy';const name=document.createElement('strong');name.textContent=item.name;const handle=document.createElement('small');handle.textContent=`@${item.username}`;info.append(name,handle);row.append(avatar,info);
+    items.forEach((item) => { const row=document.createElement('article');row.className='person-card';const avatar=document.createElement('span');avatar.className='avatar';setAvatar(avatar,{...item,id:item.direction==='incoming'?item.requester_id:item.recipient_id});const info=document.createElement('span');info.className='person-copy';const name=document.createElement('strong');name.textContent=item.name;const handle=document.createElement('small');handle.textContent=`@${item.username}`;info.append(name,handle);row.append(avatar,info);
       const action=(label,fn,cls='secondary-button')=>{const button=document.createElement('button');button.className=cls;button.textContent=label;button.addEventListener('click',fn);row.append(button);};
       if(kind==='incoming'){action('Accept',async()=>{await post(`/api/friend-requests/${item.id}/accept`,{});await renderPeople();});action('Decline',async()=>{await post(`/api/friend-requests/${item.id}/decline`,{});await renderPeople();});action('Block',async()=>{if(confirm(`Block @${item.username}?`)){await post(`/api/friend-requests/${item.id}/block`,{});await renderPeople();}},'text-button');}
       if(kind==='outgoing')action('Cancel',async()=>{await api(`/api/friend-requests/${item.id}`,{method:'DELETE'});await renderPeople();});
@@ -721,6 +767,12 @@ async function renderPeople() {
     });
   };
   paint('#incoming-requests',incoming,'incoming');paint('#outgoing-requests',outgoing,'outgoing');paint('#friends-list',friends,'friends');paint('#blocked-list',blocked,'blocked');
+  for(const [selector,label,items] of [['#incoming-requests','Incoming requests',incoming],['#outgoing-requests','Outgoing requests',outgoing],['#friends-list','Friends',friends],['#blocked-list','Blocked',blocked]]){
+    const list=$(selector),panel=list.closest('.workspace');let summary=$('.people-summary',panel);
+    const heading=$('h2',panel);if(heading)heading.hidden=true;
+    if(!summary){summary=document.createElement('button');summary.type='button';summary.className='people-summary';panel.insertBefore(summary,list);summary.addEventListener('click',()=>{list.hidden=!list.hidden;summary.setAttribute('aria-expanded',String(!list.hidden));});}
+    summary.replaceChildren();const title=document.createElement('span');title.textContent=label;const count=document.createElement('strong');count.textContent=items.length;const hint=document.createElement('small');hint.textContent='View and manage';summary.append(title,count,hint);summary.setAttribute('aria-expanded','false');list.hidden=true;
+  }
 }
 
 $('#friend-search-form').addEventListener('submit', async (event) => {
@@ -771,7 +823,7 @@ async function openConversation(conversationId) {
   localStorage.setItem('studypilot-chat', JSON.stringify({kind:'direct',id:conversationId}));
   lastDirectMessageId = 0;
   const thread = $('#direct-thread'); thread.replaceChildren();
-  const header = document.createElement('div'); header.className = 'thread-header'; const title = document.createElement('h2'); title.textContent = activeConversation.person_name || 'Private conversation'; const back=document.createElement('button');back.className='text-button mobile-back';back.textContent='← Conversations';back.addEventListener('click',()=>$('.inbox').classList.remove('chat-open'));header.append(title,back);
+  const header = document.createElement('div'); header.className = 'thread-header'; const title = document.createElement('h2'); title.textContent = activeConversation.person_name || 'Private conversation'; const controls=document.createElement('div');controls.className='thread-controls';const pinned=document.createElement('button');pinned.className='icon-button';pinned.textContent='▱';pinned.setAttribute('aria-label','Pinned messages');pinned.title='Pinned messages';pinned.addEventListener('click',()=>showDirectPinnedMessages(conversationId));const back=document.createElement('button');back.className='text-button mobile-back';back.textContent='← Conversations';back.addEventListener('click',()=>$('.inbox').classList.remove('chat-open'));controls.append(pinned,back);header.append(title,controls);
   const stream = document.createElement('div'); stream.id = 'direct-stream'; stream.className = 'direct-stream';
   const form = document.createElement('form'); form.className = 'chat-form direct-form'; const input = document.createElement('input'); input.name = 'body'; input.required = true; input.maxLength = 2000; input.placeholder = 'Write a message…'; input.setAttribute('aria-label', 'Private message'); const send = document.createElement('button'); send.className = 'primary-button'; send.textContent = 'Send'; form.append(input, send); form.addEventListener('submit', async (event) => { event.preventDefault(); try { await post(`/api/direct/conversations/${activeConversation.id}/messages`, { body: input.value }); input.value = ''; await loadDirectMessages(); await loadConversations(); renderConversations(); } catch (error) { showMessage(error.message); } });
   thread.append(header, stream, form);$('.inbox').classList.add('chat-open');
@@ -793,7 +845,7 @@ async function loadDirectMessages(refreshAll = false) {
 }
 
 $('#notification-button').addEventListener('click', async () => {
-  try { await loadNotifications(); $('#notifications-dialog').showModal(); await api('/api/notifications/read', { method: 'POST' }); $('#notification-dot').hidden = true; }
+  try { await loadNotifications(); $('#notifications-dialog').showModal(); }
   catch (error) { showMessage(error.message); }
 });
 
@@ -801,18 +853,32 @@ async function loadNotifications() {
   const records = await api('/api/notifications');
   $('#notification-dot').hidden = !records.some((item) => !item.read_at);
   const panel = $('#notifications-list'); panel.replaceChildren();
-  if (!records.length) { panel.textContent = 'You’re all caught up. New group updates will appear here.'; return; }
-  records.forEach((record) => { const item = document.createElement('div'); item.className = `notification-item ${record.read_at ? '' : 'unread'}`; const text = document.createElement('p'); text.textContent = `${record.actor || 'A teammate'} ${record.detail}`; const time = document.createElement('small'); time.textContent = formatTimestamp(record.created_at); item.append(text, time); panel.append(item); });
+  if (!records.length) { panel.textContent = 'You’re all caught up. New group updates will appear here.'; syncNotificationSelection(0); return; }
+  records.forEach((record) => { const item = document.createElement('article'); item.className = `notification-item ${record.read_at ? '' : 'unread'}`; const check=document.createElement('input');check.type='checkbox';check.className='notification-check';check.value=record.id;check.setAttribute('aria-label',`Select notification from ${record.actor||'StudyPilot'}`);check.addEventListener('change',()=>syncNotificationSelection(records.length));const content=document.createElement('div');content.className='notification-copy'; const text = document.createElement('p'); text.textContent = `${record.actor || 'A teammate'} ${record.detail}`; const time = document.createElement('small'); time.textContent = formatTimestamp(record.created_at);content.append(text,time);const read=document.createElement('button');read.type='button';read.className='text-button notification-read';read.textContent=record.read_at?'Mark unread':'Mark read';read.addEventListener('click',async()=>{await patch('/api/notifications',{action:record.read_at?'unread':'read',ids:[record.id]});await loadNotifications();});item.append(check,content,read); panel.append(item); });
+  syncNotificationSelection(records.length);
 }
+
+function syncNotificationSelection(total) {
+  const selected=$$('.notification-check:checked').length;$('#notification-selection-count').textContent=`${selected} selected`;
+  $('#notification-delete-selected').disabled=!selected;
+  const all=$('#notification-select-all');all.checked=total>0&&selected===total;all.indeterminate=selected>0&&selected<total;
+}
+
+$('#notification-select-all').addEventListener('change',event=>{$$('.notification-check').forEach(box=>box.checked=event.currentTarget.checked);syncNotificationSelection($$('.notification-check').length);});
+$('#notification-delete-selected').addEventListener('click',async()=>{const ids=$$('.notification-check:checked').map(box=>Number(box.value));if(!ids.length)return;try{await patch('/api/notifications',{action:'delete',ids});await loadNotifications();}catch(error){showMessage(error.message);}});
+$('#notification-clear-all').addEventListener('click',async()=>{if(!confirm('Clear every notification? This cannot be undone.'))return;try{await api('/api/notifications',{method:'DELETE'});await loadNotifications();}catch(error){showMessage(error.message);}});
 
 $('#account-button').addEventListener('click', () => { $('#account-menu').hidden = !$('#account-menu').hidden; });
 document.addEventListener('click', (event) => { if (!event.target.closest('.account-area')) $('#account-menu').hidden = true; });
-$('#profile-open').addEventListener('click', () => { $('#account-menu').hidden = true; $('#profile-form').reset(); $('#profile-form').elements.name.value = user.name; $('#profile-form').elements.username.value = user.username; $('#profile-form').elements.bio.value=user.bio||'';$('#profile-form').elements.avatar.value=user.avatar||'violet';$('#profile-form').elements.theme.value=user.theme||'light'; $('#profile-email').value = user.email; $('#profile-error').textContent = ''; $('#profile-saved').textContent = ''; $('#profile-dialog').showModal(); });
+$('#profile-open').addEventListener('click', () => { $('#account-menu').hidden = true; $('#profile-form').reset(); $('#profile-form').elements.name.value = user.name; $('#profile-form').elements.username.value = user.username; $('#profile-form').elements.bio.value=user.bio||''; $('#profile-email').value = user.email; $('#profile-error').textContent = ''; $('#profile-saved').textContent = ''; $('#profile-dialog').showModal(); });
 $('#profile-form').addEventListener('submit', async (event) => {
   event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); $('#profile-error').textContent = ''; $('#profile-saved').textContent = '';
-  try { user = await patch('/api/profile', { name: data.name, username: data.username, bio:data.bio, avatar:data.avatar, theme:data.theme }); if (data.new_password) await api('/api/profile/password', { method: 'POST', body: JSON.stringify({ current_password: data.current_password, new_password: data.new_password }) }); $('#account-name').textContent = user.name; setAvatar($('#avatar'),user);setTheme(user.theme); $('#profile-saved').textContent = 'Your settings are saved.'; }
+  try { const file=$('#profile-photo').files[0];if(file){const form=new FormData();form.append('photo',file);const response=await fetch('/api/profile/photo',{method:'POST',credentials:'same-origin',body:form});if(!response.ok){const error=await response.json().catch(()=>({}));throw new Error(error.detail||'Photo upload failed.');}user.profile_photo=true;} user = await patch('/api/profile', { name: data.name, username: data.username, bio:data.bio }); $('#account-button').setAttribute('aria-label',`Open account menu for ${user.name}`); setAvatar($('#avatar'),user); $('#profile-saved').textContent = 'Your profile is saved.'; }
   catch (error) { $('#profile-error').textContent = error.message; }
 });
+
+$('#settings-open').addEventListener('click',()=>{$('#account-menu').hidden=true;$('#settings-form').reset();$('#settings-form').elements.avatar.value=user.avatar||'violet';$('#settings-form').elements.theme.value=user.theme||'light';$('#settings-error').textContent='';$('#settings-saved').textContent='';$('#settings-dialog').showModal();});
+$('#settings-form').addEventListener('submit',async event=>{event.preventDefault();const data=Object.fromEntries(new FormData(event.currentTarget));$('#settings-error').textContent='';$('#settings-saved').textContent='';try{if(data.new_password){await api('/api/profile/password',{method:'POST',body:JSON.stringify({current_password:data.current_password,new_password:data.new_password})});}user=await patch('/api/profile',{name:user.name,avatar:data.avatar,theme:data.theme});setAvatar($('#avatar'),user);setTheme(user.theme);$('#settings-saved').textContent='Your settings are saved.';}catch(error){$('#settings-error').textContent=error.message;}});
 
 $('#logout-button').addEventListener('click', async () => { try { await api('/api/auth/logout', { method: 'POST' }); } finally { stopPolling(); user = null; location.hash = '#/dashboard'; $('#app-screen').hidden = true; $('#auth-screen').hidden = false; authMode(false); } });
 $$('[data-close]').forEach((button) => button.addEventListener('click', () => $(`#${button.dataset.close}`).close()));

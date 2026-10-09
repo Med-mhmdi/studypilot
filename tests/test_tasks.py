@@ -1,9 +1,11 @@
 import sqlite3
+import io
 from datetime import datetime
 
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.main import app, _hash_password
+from PIL import Image
 
 
 def client_for(path, monkeypatch):
@@ -154,7 +156,7 @@ def test_direct_messages_are_private_to_shared_group_participants(tmp_path, monk
             register(ben, "ben@example.edu", "Ben")
             ben.post(f"/api/invitations/{invite['token']}/accept")
             contacts = ben.get("/api/people").json()
-            assert contacts == [{"id": 1, "name": "Alice", "username": "alice", "avatar": "violet"}]
+            assert contacts == [{"id": 1, "name": "Alice", "username": "alice", "avatar": "violet", "profile_photo": None}]
             group_search = ben.get("/api/people/search?q=alice").json()
             assert group_search[0]["relationship"] == "group_classmate"
             conversation = ben.post("/api/direct/conversations", json={"recipient_id": 1})
@@ -224,7 +226,7 @@ def test_username_friend_request_accept_block_and_private_access(tmp_path, monke
         with TestClient(app) as bob:
             register(bob, "bobby@example.edu", "Bobby")
             search = alice.get("/api/people/search?q=bob").json()
-            assert search == [{"id": 2, "name": "Bobby", "username": "bobby", "avatar": "violet", "relationship": "not_connected"}]
+            assert search == [{"id": 2, "name": "Bobby", "username": "bobby", "avatar": "violet", "profile_photo": None, "relationship": "not_connected"}]
             assert alice.get("/api/people/search?q=%%%").json() == []
             assert "email" not in search[0]
             assert alice.patch("/api/profile", json={"name": "Alice", "username": "BOBBY"}).status_code == 409
@@ -286,7 +288,7 @@ def test_shareable_join_code_request_approval_rotation_and_unread(tmp_path, monk
             approved = owner.post(f"/api/projects/{project['id']}/join-requests/{pending[0]['id']}/approve")
             assert approved.json()["status"] == "accepted"
             assert student.get(f"/api/projects/{project['id']}").status_code == 200
-            assert student.get(f"/api/projects/{project['id']}").json()["members"][-1]["role"] == "editor"
+            assert student.get(f"/api/projects/{project['id']}").json()["members"][-1]["role"] == "student"
             message = owner.post(f"/api/projects/{project['id']}/messages", json={"body": "Welcome"}).json()
             assert student.get("/api/group-conversations").json()[0]["unread_count"] == 1
             assert student.get(f"/api/projects/{project['id']}/messages").json()[0]["id"] == message["id"]
@@ -300,6 +302,124 @@ def test_shareable_join_code_request_approval_rotation_and_unread(tmp_path, monk
                 for _ in range(8):
                     assert third.post("/api/projects/join-requests", json={"code":"SP-INVALID-CODE"}).status_code == 404
                 assert third.post("/api/projects/join-requests", json={"code":"SP-INVALID-CODE"}).status_code == 429
+
+
+def test_direct_message_pins_are_private_and_jumpable_data(tmp_path, monkeypatch):
+    with client_for(tmp_path / "direct-pins.db", monkeypatch) as owner:
+        register(owner, "owner@example.edu", "Owner")
+        project = owner.post("/api/projects", json={"name": "Study crew"}).json()
+        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email": "mate@example.edu", "role": "editor"}).json()
+        with TestClient(app) as mate:
+            register(mate, "mate@example.edu", "Mate")
+            assert mate.post(f"/api/invitations/{invite['token']}/accept").status_code == 200
+            conversation = owner.post("/api/direct/conversations", json={"recipient_id": 2}).json()
+            message = owner.post(f"/api/direct/conversations/{conversation['id']}/messages", json={"body": "Remember the lab notes"}).json()
+            assert mate.post(f"/api/direct/conversations/{conversation['id']}/messages/{message['id']}/pin").json() == {"pinned": True}
+            pinned = mate.get(f"/api/direct/conversations/{conversation['id']}/pinned-messages")
+            assert pinned.status_code == 200 and pinned.json()[0]["id"] == message["id"]
+            assert owner.get(f"/api/direct/conversations/{conversation['id']}/messages/{message['id']}").json()["pinned_at"]
+            assert mate.delete(f"/api/direct/conversations/{conversation['id']}/messages/{message['id']}/pin").status_code == 204
+            assert mate.get(f"/api/direct/conversations/{conversation['id']}/pinned-messages").json() == []
+        with TestClient(app) as stranger:
+            register(stranger, "stranger@example.edu", "Stranger")
+            assert stranger.get(f"/api/direct/conversations/{conversation['id']}/pinned-messages").status_code == 404
+            assert stranger.post(f"/api/direct/conversations/{conversation['id']}/messages/{message['id']}/pin").status_code == 404
+
+
+def test_notification_bulk_actions_are_scoped_to_the_signed_in_user(tmp_path, monkeypatch):
+    path = tmp_path / "notifications.db"
+    with client_for(path, monkeypatch) as alice:
+        register(alice, "alice@example.edu", "Alice")
+        with TestClient(app) as bob:
+            register(bob, "bob@example.edu", "Bob")
+            with sqlite3.connect(path) as con:
+                con.execute("INSERT INTO notifications(user_id,kind,detail) VALUES(1,'test','Alice notification')")
+                alice_id = con.execute("SELECT last_insert_rowid()").fetchone()[0]
+                con.execute("INSERT INTO notifications(user_id,kind,detail) VALUES(2,'test','Bob notification')")
+                bob_id = con.execute("SELECT last_insert_rowid()").fetchone()[0]
+            assert alice.patch("/api/notifications", json={"action":"read","ids":[alice_id,bob_id]}).json()["updated"] == 1
+            assert bob.get("/api/notifications").json()[0]["read_at"] is None
+            assert alice.patch("/api/notifications", json={"action":"delete","ids":[bob_id]}).json()["updated"] == 0
+            assert alice.patch("/api/notifications", json={"action":"unread","ids":[alice_id]}).json()["updated"] == 1
+            assert alice.get("/api/notifications").json()[0]["read_at"] is None
+            assert alice.delete("/api/notifications").status_code == 204
+            assert alice.get("/api/notifications").json() == []
+            assert bob.get("/api/notifications").json()[0]["id"] == bob_id
+
+
+def test_group_role_permissions_and_ownership_transfer(tmp_path, monkeypatch):
+    with client_for(tmp_path / "roles.db", monkeypatch) as owner:
+        register(owner, "owner@example.edu", "Owner")
+        project = owner.post("/api/projects", json={"name":"Team"}).json()
+        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email":"student@example.edu","role":"editor"}).json()
+        with TestClient(app) as student:
+            register(student, "student@example.edu", "Student")
+            student.post(f"/api/invitations/{invite['token']}/accept")
+            assert student.patch(f"/api/projects/{project['id']}", json={"name":"Hijacked"}).status_code == 403
+            assert student.post(f"/api/projects/{project['id']}/invites", json={"email":"other@example.edu"}).status_code == 403
+            assert owner.patch(f"/api/projects/{project['id']}/members/2", json={"role":"admin"}).json()["role"] == "admin"
+            assert student.patch(f"/api/projects/{project['id']}", json={"name":"Team renamed","description":"Shared goal"}).status_code == 200
+            assert student.delete(f"/api/projects/{project['id']}/members/1").status_code == 403
+            assert student.delete(f"/api/projects/{project['id']}").status_code == 403
+            assert owner.post(f"/api/projects/{project['id']}/transfer-owner", json={"user_id":2}).status_code == 200
+            assert owner.delete(f"/api/projects/{project['id']}").status_code == 403
+            assert student.delete(f"/api/projects/{project['id']}").status_code == 204
+
+
+def test_legacy_group_roles_migrate_without_granting_old_viewers_write_access(tmp_path, monkeypatch):
+    path=tmp_path/"legacy-roles.db"
+    with sqlite3.connect(path) as con:
+        con.execute("PRAGMA foreign_keys=ON")
+        con.execute("CREATE TABLE users(id INTEGER PRIMARY KEY,email TEXT NOT NULL UNIQUE COLLATE NOCASE,name TEXT NOT NULL,password_hash TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT 'old')")
+        con.execute("INSERT INTO users(id,email,name,password_hash) VALUES(1,'owner@example.edu','Owner',?)",(_hash_password("study-together-123"),))
+        con.execute("INSERT INTO users(id,email,name,password_hash) VALUES(2,'reader@example.edu','Reader',?)",(_hash_password("study-together-123"),))
+        con.execute("CREATE TABLE projects(id INTEGER PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,created_at TEXT NOT NULL DEFAULT 'old')")
+        con.execute("INSERT INTO projects(id,name,created_by) VALUES(1,'Old group',1)")
+        con.execute("CREATE TABLE project_members(project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,role TEXT NOT NULL CHECK(role IN ('owner','editor','viewer')),joined_at TEXT NOT NULL DEFAULT 'old',PRIMARY KEY(project_id,user_id))")
+        con.execute("INSERT INTO project_members(project_id,user_id,role) VALUES(1,1,'owner')")
+        con.execute("INSERT INTO project_members(project_id,user_id,role) VALUES(1,2,'viewer')")
+    monkeypatch.setenv("DB_PATH",str(path))
+    with TestClient(app) as owner, TestClient(app) as reader:
+        assert owner.post("/api/auth/login",json={"email":"owner@example.edu","password":"study-together-123"}).status_code==200
+        assert reader.post("/api/auth/login",json={"email":"reader@example.edu","password":"study-together-123"}).status_code==200
+        project=reader.get("/api/projects/1").json()
+        migrated=next(item for item in project["members"] if item["id"]==2)
+        assert project["role"]=="viewer" and migrated["role"]=="student" and migrated["legacy_readonly"]==1
+        with sqlite3.connect(path) as con:
+            assert con.execute("SELECT role,role_v6 FROM project_members WHERE project_id=1 AND user_id=2").fetchone()==("viewer","student")
+            assert con.execute("SELECT COUNT(*) FROM project_members WHERE project_id=1").fetchone()[0]==2
+        assert reader.post("/api/projects/1/messages",json={"body":"still read only"}).status_code==403
+        assert owner.patch("/api/projects/1/members/2",json={"role":"student"}).status_code==200
+        assert reader.post("/api/projects/1/messages",json={"body":"promoted by owner"}).status_code==201
+
+
+def test_profile_photo_is_reencoded_and_svg_or_invalid_images_are_rejected(tmp_path, monkeypatch):
+    path = tmp_path / "photos.db"
+    with client_for(path, monkeypatch) as alice:
+        register(alice, "alice@example.edu", "Alice")
+        image = Image.new("RGB", (1200, 800), "#6c5ce7")
+        exif=Image.Exif(); exif[270]="private metadata"
+        stream = io.BytesIO(); image.save(stream, format="JPEG", exif=exif)
+        uploaded = alice.post("/api/profile/photo", files={"photo":("face.jpg",stream.getvalue(),"image/jpeg")})
+        assert uploaded.status_code == 200 and uploaded.json()["profile_photo"] is True
+        response = alice.get("/api/profile/photo")
+        assert response.status_code == 200 and response.headers["content-type"] == "image/webp"
+        decoded = Image.open(io.BytesIO(response.content))
+        assert decoded.format == "WEBP" and max(decoded.size) <= 512 and not decoded.getexif()
+        assert alice.post("/api/profile/photo", files={"photo":("face.svg",b"<svg xmlns='http://www.w3.org/2000/svg'/>","image/svg+xml")}).status_code == 415
+        assert alice.post("/api/profile/photo", files={"photo":("fake.jpg",b"not an image","image/jpeg")}).status_code == 415
+        assert alice.post("/api/profile/photo", files={"photo":("large.jpg",b"x"*(5*1024*1024+1),"image/jpeg")}).status_code == 413
+        project=alice.post("/api/projects",json={"name":"Photo access group"}).json()
+        invite=alice.post(f"/api/projects/{project['id']}/invites",json={"email":"bob@example.edu"}).json()
+        with TestClient(app) as bob:
+            register(bob, "bob@example.edu", "Bob")
+            assert bob.get("/api/profile/photo").status_code == 404
+            bob.post(f"/api/invitations/{invite['token']}/accept")
+            peer_photo=bob.get("/api/people/1/photo")
+            assert peer_photo.status_code == 200 and peer_photo.headers["content-type"] == "image/webp"
+        with TestClient(app) as stranger:
+            register(stranger,"stranger@example.edu","Stranger")
+            assert stranger.get("/api/people/1/photo").status_code == 404
 
 
 def test_profile_preferences_friend_cancel_and_notifications(tmp_path, monkeypatch):
