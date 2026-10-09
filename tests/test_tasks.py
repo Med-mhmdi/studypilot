@@ -154,7 +154,9 @@ def test_direct_messages_are_private_to_shared_group_participants(tmp_path, monk
             register(ben, "ben@example.edu", "Ben")
             ben.post(f"/api/invitations/{invite['token']}/accept")
             contacts = ben.get("/api/people").json()
-            assert contacts == [{"id": 1, "name": "Alice", "username": "alice"}]
+            assert contacts == [{"id": 1, "name": "Alice", "username": "alice", "avatar": "violet"}]
+            group_search = ben.get("/api/people/search?q=alice").json()
+            assert group_search[0]["relationship"] == "group_classmate"
             conversation = ben.post("/api/direct/conversations", json={"recipient_id": 1})
             assert conversation.status_code == 201
             conversation_id = conversation.json()["id"]
@@ -222,7 +224,7 @@ def test_username_friend_request_accept_block_and_private_access(tmp_path, monke
         with TestClient(app) as bob:
             register(bob, "bobby@example.edu", "Bobby")
             search = alice.get("/api/people/search?q=bob").json()
-            assert search == [{"id": 2, "name": "Bobby", "username": "bobby"}]
+            assert search == [{"id": 2, "name": "Bobby", "username": "bobby", "avatar": "violet", "relationship": "not_connected"}]
             assert alice.get("/api/people/search?q=%%%").json() == []
             assert "email" not in search[0]
             assert alice.patch("/api/profile", json={"name": "Alice", "username": "BOBBY"}).status_code == 409
@@ -234,7 +236,12 @@ def test_username_friend_request_accept_block_and_private_access(tmp_path, monke
             conversation = alice.post("/api/direct/conversations", json={"recipient_id": 2})
             assert conversation.status_code == 201
             conversation_id = conversation.json()["id"]
-            assert bob.post(f"/api/direct/conversations/{conversation_id}/messages", json={"body": "Study together?"}).status_code == 201
+            message=bob.post(f"/api/direct/conversations/{conversation_id}/messages", json={"body": "Study together?"}).json()
+            assert alice.get("/api/notifications").json()[0]["kind"] == "direct_message"
+            assert alice.patch(f"/api/direct/conversations/{conversation_id}/messages/{message['id']}",json={"body":"No"}).status_code == 403
+            assert bob.patch(f"/api/direct/conversations/{conversation_id}/messages/{message['id']}",json={"body":"Edited"}).json()["edited_at"]
+            assert bob.delete(f"/api/direct/conversations/{conversation_id}/messages/{message['id']}").status_code == 204
+            assert alice.get(f"/api/direct/conversations/{conversation_id}/messages").json()[0]["deleted_at"]
             assert alice.post(f"/api/friend-requests/{request.json()['id']}/block").json()["status"] == "blocked"
             assert alice.get(f"/api/direct/conversations/{conversation_id}/messages").status_code == 404
             assert bob.post("/api/direct/conversations", json={"recipient_id": 1}).status_code == 404
@@ -255,8 +262,64 @@ def test_group_message_edit_delete_pin_authorization(tmp_path, monkeypatch):
             assert editor.post(f"/api/projects/{project['id']}/messages/{msg['id']}/pin").status_code == 403
             assert owner.post(f"/api/projects/{project['id']}/messages/{msg['id']}/pin").status_code == 200
             assert owner.get(f"/api/projects/{project['id']}/messages").json()[0]["pinned_at"]
+            assert owner.get(f"/api/projects/{project['id']}/pinned-messages").json()[0]["id"] == msg["id"]
             assert editor.delete(f"/api/projects/{project['id']}/messages/{msg['id']}").status_code == 204
-            assert owner.get(f"/api/projects/{project['id']}/messages").json() == []
+            tombstone = editor.get(f"/api/projects/{project['id']}/messages").json()[0]
+            assert tombstone["deleted_at"] and tombstone["body"] == "Message deleted"
+            assert owner.get(f"/api/projects/{project['id']}/messages").json()[0]["deleted_at"]
+
+
+def test_shareable_join_code_request_approval_rotation_and_unread(tmp_path, monkeypatch):
+    with client_for(tmp_path / "join.db", monkeypatch) as owner:
+        register(owner, "owner@example.edu", "Owner")
+        project = owner.post("/api/projects", json={"name": "Chemistry group"}).json()
+        code = project["join_code"]
+        assert code.startswith("SP-") and len(code.removeprefix("SP-")) == 14
+        with TestClient(app) as student:
+            register(student, "student@example.edu", "Student")
+            assert student.get(f"/api/projects/{project['id']}").status_code == 404
+            request = student.post("/api/projects/join-requests", json={"code": code})
+            assert request.status_code == 202 and request.json()["status"] == "pending"
+            assert student.get(f"/api/projects/{project['id']}").status_code == 404
+            pending = owner.get(f"/api/projects/{project['id']}/join-requests").json()
+            assert len(pending) == 1 and pending[0]["username"] == "student"
+            approved = owner.post(f"/api/projects/{project['id']}/join-requests/{pending[0]['id']}/approve")
+            assert approved.json()["status"] == "accepted"
+            assert student.get(f"/api/projects/{project['id']}").status_code == 200
+            assert student.get(f"/api/projects/{project['id']}").json()["members"][-1]["role"] == "editor"
+            message = owner.post(f"/api/projects/{project['id']}/messages", json={"body": "Welcome"}).json()
+            assert student.get("/api/group-conversations").json()[0]["unread_count"] == 1
+            assert student.get(f"/api/projects/{project['id']}/messages").json()[0]["id"] == message["id"]
+            assert student.get("/api/group-conversations").json()[0]["unread_count"] == 0
+            rotated = owner.post(f"/api/projects/{project['id']}/join-code/rotate").json()["code"]
+            assert rotated != code
+            with TestClient(app) as third:
+                register(third, "third@example.edu", "Third")
+                assert third.post("/api/projects/join-requests", json={"code": code}).status_code == 404
+                assert third.post("/api/projects/join-requests", json={"code": rotated}).json()["status"] == "pending"
+                for _ in range(8):
+                    assert third.post("/api/projects/join-requests", json={"code":"SP-INVALID-CODE"}).status_code == 404
+                assert third.post("/api/projects/join-requests", json={"code":"SP-INVALID-CODE"}).status_code == 429
+
+
+def test_profile_preferences_friend_cancel_and_notifications(tmp_path, monkeypatch):
+    with client_for(tmp_path / "people-v5.db", monkeypatch) as alice:
+        register(alice, "alice-v5@example.edu", "Alice")
+        with TestClient(app) as bob:
+            register(bob, "bob-v5@example.edu", "Bob")
+            updated = alice.patch("/api/profile", json={"name":"Alice", "avatar":"ocean", "bio":"Biology student", "theme":"dark"})
+            assert updated.status_code == 200
+            assert (updated.json()["avatar"], updated.json()["bio"], updated.json()["theme"]) == ("ocean", "Biology student", "dark")
+            sent = alice.post("/api/friend-requests", json={"username":"bob-v5"})
+            assert sent.status_code == 201
+            assert alice.get("/api/people/search?q=bob-v5").json()[0]["relationship"] == "request_sent"
+            assert bob.get("/api/notifications").json()[0]["kind"] == "friend_request"
+            assert bob.post("/api/notifications/read").status_code == 204
+            assert bob.get("/api/notifications").json()[0]["read_at"]
+            assert bob.get("/api/people/search?q=alice-v5").json()[0]["relationship"] == "incoming_request"
+            assert alice.delete(f"/api/friend-requests/{sent.json()['id']}").status_code == 204
+            assert bob.get("/api/friend-requests").json() == []
+            assert bob.get("/api/notifications").json()[0]["kind"] == "friend_request_cancelled"
 
 
 

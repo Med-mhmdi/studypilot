@@ -5,11 +5,12 @@ StudyPilot is a collaborative student workspace for assignments and study groups
 ## Features
 
 - A high-level Overview with completion progress, focus tasks, and clickable Up Next, In Progress, Completed, and Overdue counts; a separate searchable Assignment Board with a recent completed view and full archive.
-- Account registration, sign-in/out, unique case-insensitive usernames, profile and password settings. Passwords are stored as salted scrypt hashes.
+- Account registration, sign-in/out, unique case-insensitive usernames, persistent avatar, bio, theme, profile and password settings. Passwords are stored as salted scrypt hashes.
 - Private personal assignments and project membership checks on every shared-data API.
 - Shared group workspaces with owner, editor, and viewer roles; email-bound, expiring invitation links/codes; team assignment; and project milestones.
-- Group discussion in Messages, with own-message edit/delete, owner pin controls, and live refresh; private 1:1 chat is available to accepted friends and existing group classmates.
-- Separate URL-addressable Overview, Assignment Board, Groups, Calendar, and Messages views; case-insensitive username search and friend requests; in-app notifications and a saved dark-mode setting.
+- Group discussion and private 1:1 chat share a responsive Messages workspace with grouped bubbles, date separators, scroll-position retention, three-dot message actions, edit/delete, durable tombstones, pinned-message search/jump, and unread counts.
+- Separate Overview, Assignment Board, Groups, Calendar, Messages, and Classmates views; username search, incoming/outgoing/friend/blocked lists, cancellable requests, and in-app notifications for requests and private messages.
+- Cryptographically random 70-bit group codes identify groups without granting membership. Users submit join requests, owners approve/reject/block them, and code rotation invalidates old codes. Existing one-time email invitations remain supported.
 - Responsive layouts for mobile, tablet, and desktop, with loading, error, and empty states.
 - Additive SQLite migrations preserve existing task rows, backfill stable unique handles for existing accounts, and add nullable started/completed timestamps plus task status history. Historical timestamps are never inferred.
 
@@ -24,16 +25,16 @@ uvicorn app.main:app --reload
 
 Open <http://127.0.0.1:8000>. SQLite is stored at `data/studypilot.db`. The server creates a persistent signing key beside that database on first run. Back up that key with the database; changing it signs out active sessions. For a hosted deployment, set a long random `SESSION_SECRET` in the Dokku app configuration and set `COOKIE_SECURE=true` when traffic uses HTTPS. Keep the database and key in persistent private storage. The app does not expose personal or project data to anonymous requests.
 
-For an isolated local preview on port **8765**, use a separate SQLite filename so your normal database stays untouched:
+For an isolated local preview on port **8765**, use a separate SQLite filename so your normal database stays untouched. If port 8765 is occupied, identify the owning process before stopping it; do not terminate an unrelated service.
 
 ```powershell
-$env:DB_PATH = "data/studypilot-v4-preview.db"
+$env:DB_PATH = "data/studypilot-v5-preview.db"
 $env:SESSION_SECRET = "local-preview-key-change-before-hosting"
 $env:COOKIE_SECURE = "false"
 uvicorn app.main:app --host 127.0.0.1 --port 8765
 ```
 
-Open <http://127.0.0.1:8765>, create two accounts with different email addresses, create a group with one account, invite the second account by email, then test task dates/history, message controls, friend requests, and private chat. Invitation codes are one-time, expire after seven days, and only work for the email they were issued to. Stop the server with Ctrl+C. The preview database and its signing-key file remain in `data/`.
+Open <http://127.0.0.1:8765>, create two accounts with different email addresses, create a group, copy its `SP-...` code, submit it from the second account, then approve it as the owner. Search for the second account by username, send and accept a friend request, and test private/group chat, message actions, pinned messages, and profile preferences. Group codes expire only when rotated/replaced and never grant membership; pending legacy email invitations remain email-bound and expire after seven days. Stop the server with Ctrl+C. The preview database and its signing-key file remain in `data/`.
 
 The first account created in a fresh database becomes the first user. For an existing database, the first registered account claims legacy unowned tasks, so register the existing owner before sharing the app address with classmates. New users only see their own assignments and projects to which they have been invited. Invitations are created in the app and returned as a link to share through the group’s usual channel; StudyPilot does not send email.
 
@@ -72,7 +73,7 @@ The workflow uses strict SSH host-key checking and deploys only after tests pass
 
 - `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`
 - `GET/POST /api/tasks`, `GET/PATCH/DELETE /api/tasks/{id}`, `GET /api/tasks/{id}/history`
-- `GET/POST /api/projects`, `GET /api/projects/{id}`
+- `GET/POST /api/projects`, `GET /api/projects/{id}`, join-code request/review/rotation endpoints, and pinned-message endpoints
 - `POST /api/projects/{id}/invites`, `POST /api/invitations/{token}/accept`, `POST /api/invitations/accept`
 - `GET/POST /api/projects/{id}/milestones`, `PATCH /api/projects/{id}/milestones/{milestone_id}`
 - `GET/POST /api/projects/{id}/messages` (poll with `after_id`), `PATCH/DELETE /api/projects/{id}/messages/{message_id}`, owner-only pin/unpin

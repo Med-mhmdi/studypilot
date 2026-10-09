@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import db
-from app.schemas import (DirectConversationCreate, FriendRequestCreate, InviteAccept, InviteCreate, Login, MessageCreate, MessageUpdate,
+from app.schemas import (DirectConversationCreate, FriendRequestCreate, JoinCodeSubmit, InviteAccept, InviteCreate, Login, MessageCreate, MessageUpdate,
                          MilestoneCreate, MilestoneUpdate, PasswordUpdate, ProfileUpdate,
                          ProjectCreate, Priority, Register, TaskCreate, TaskStatus, TaskUpdate)
 from app.telemetry import configure_telemetry, request_metrics
@@ -45,7 +45,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="StudyPilot", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="StudyPilot", version="0.5.0", lifespan=lifespan)
 app.add_middleware(SessionMiddleware, secret_key=_session_secret(), session_cookie="studypilot_session",
                    same_site="strict", https_only=os.getenv("COOKIE_SECURE", "false").lower() == "true",
                    max_age=60 * 60 * 24 * 14)
@@ -74,7 +74,7 @@ def current_user(request: Request) -> dict:
     if not user_id:
         raise HTTPException(status_code=401, detail="sign in to continue")
     with db.connect() as con:
-        row = con.execute("SELECT id,email,name,username,created_at FROM users WHERE id=?", (user_id,)).fetchone()
+        row = con.execute("SELECT id,email,name,username,created_at,avatar,bio,theme FROM users WHERE id=?", (user_id,)).fetchone()
     if row is None:
         request.session.clear()
         raise HTTPException(status_code=401, detail="sign in to continue")
@@ -102,7 +102,7 @@ def _verify_password(password: str, encoded: str) -> bool:
 
 
 def _profile(row: sqlite3.Row) -> dict:
-    return {"id": row["id"], "email": row["email"], "username": row["username"], "name": row["name"], "created_at": row["created_at"]}
+    return {"id": row["id"], "email": row["email"], "username": row["username"], "name": row["name"], "created_at": row["created_at"], "avatar": row["avatar"], "bio": row["bio"], "theme": row["theme"]}
 
 
 def _membership(con: sqlite3.Connection, project_id: int, user_id: int) -> sqlite3.Row:
@@ -209,10 +209,12 @@ def update_profile(body: ProfileUpdate, user: User):
         raise HTTPException(status_code=422, detail="name cannot be blank")
     with db.connect() as con:
         try:
-            if username is None:
-                con.execute("UPDATE users SET name=? WHERE id=?", (name, user["id"]))
-            else:
-                con.execute("UPDATE users SET name=?,username=? WHERE id=?", (name, username, user["id"]))
+            changes = {"name": name}
+            if username is not None: changes["username"] = username
+            for key in ("avatar", "bio", "theme"):
+                value = getattr(body, key)
+                if value is not None: changes[key] = value.strip() if key == "bio" else value
+            con.execute("UPDATE users SET " + ",".join(f"{key}=?" for key in changes) + " WHERE id=?", [*changes.values(), user["id"]])
         except sqlite3.IntegrityError as exc:
             raise HTTPException(status_code=409, detail="that username is already taken") from exc
         return _profile(con.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone())
@@ -244,11 +246,104 @@ def create_project(body: ProjectCreate, user: User):
     if not name:
         raise HTTPException(status_code=422, detail="project name cannot be blank")
     with db.connect() as con:
-        cur = con.execute("INSERT INTO projects(name,description,created_by) VALUES(?,?,?)", (name, body.description.strip(), user["id"]))
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        code = ""
+        for _ in range(5):
+            code = "SP-" + "".join(secrets.choice(alphabet) for _ in range(14))
+            try:
+                cur = con.execute("INSERT INTO projects(name,description,created_by,join_code) VALUES(?,?,?,?)", (name, body.description.strip(), user["id"], code))
+                break
+            except sqlite3.IntegrityError:
+                if _ == 4: raise HTTPException(status_code=503, detail="could not create a unique group code")
         project_id = cur.lastrowid
         con.execute("INSERT INTO project_members(project_id,user_id,role) VALUES(?,?,'owner')", (project_id, user["id"]))
         _log_activity(con, project_id, user["id"], "project_created", f"created {name}")
         return dict(con.execute("SELECT p.*,m.role,1 AS member_count,0 AS task_count FROM projects p JOIN project_members m ON m.project_id=p.id WHERE p.id=? AND m.user_id=?", (project_id, user["id"])).fetchone())
+
+
+@app.post("/api/projects/join-requests", status_code=202)
+def request_group_membership(body: JoinCodeSubmit, user: User, request: Request):
+    code = body.code.strip().upper().replace(" ", "")
+    with db.connect() as con:
+        attempts = con.execute("SELECT COUNT(*) FROM join_code_attempts WHERE user_id=? AND attempted_at>strftime('%Y-%m-%dT%H:%M:%SZ','now','-10 minutes')", (user["id"],)).fetchone()[0]
+        if attempts >= 10: raise HTTPException(status_code=429, detail="Too many attempts. Try again in a few minutes.")
+        con.execute("INSERT INTO join_code_attempts(user_id) VALUES(?)", (user["id"],))
+        con.commit()
+        project = con.execute("SELECT id,created_by FROM projects WHERE join_code=?", (code,)).fetchone()
+        if project is None: raise HTTPException(status_code=404, detail="No group matches that code.")
+        if con.execute("SELECT 1 FROM project_members WHERE project_id=? AND user_id=?", (project["id"], user["id"])).fetchone():
+            return {"status": "already_member"}
+        existing = con.execute("SELECT id,status FROM project_join_requests WHERE project_id=? AND user_id=? ORDER BY id DESC LIMIT 1", (project["id"], user["id"])).fetchone()
+        if existing and existing["status"] == "pending": return {"status": "pending"}
+        if existing and existing["status"] == "blocked": raise HTTPException(status_code=403, detail="you cannot request access to this group")
+        cur = con.execute("INSERT INTO project_join_requests(project_id,user_id) VALUES(?,?)", (project["id"], user["id"]))
+        con.execute("INSERT INTO notifications(user_id,project_id,actor_id,kind,detail) VALUES(?,?,?,'group_join_request','A classmate asked to join your group.')", (project["created_by"], project["id"], user["id"]))
+        return {"status": "pending", "request_id": cur.lastrowid}
+
+
+@app.post("/api/projects/{project_id}/join-code/rotate")
+def rotate_join_code(project_id: int, user: User):
+    with db.connect() as con:
+        if _membership(con, project_id, user["id"])["role"] != "owner": raise HTTPException(status_code=403, detail="only group owners can change the join code")
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        for attempt in range(5):
+            code = "SP-" + "".join(secrets.choice(alphabet) for _ in range(14))
+            try:
+                con.execute("UPDATE projects SET join_code=? WHERE id=?", (code, project_id)); break
+            except sqlite3.IntegrityError:
+                if attempt == 4: raise HTTPException(status_code=503, detail="could not create a unique group code")
+        _log_activity(con, project_id, user["id"], "join_code_rotated", "rotated the group join code")
+        return {"code": code}
+
+
+@app.get("/api/projects/{project_id}/join-requests")
+def list_group_join_requests(project_id: int, user: User):
+    with db.connect() as con:
+        if _membership(con, project_id, user["id"])["role"] != "owner": raise HTTPException(status_code=403, detail="only group owners can review requests")
+        return [dict(r) for r in con.execute("SELECT r.id,r.status,r.created_at,u.id user_id,u.name,u.username FROM project_join_requests r JOIN users u ON u.id=r.user_id WHERE r.project_id=? AND r.status='pending' ORDER BY r.created_at", (project_id,)).fetchall()]
+
+
+@app.post("/api/projects/{project_id}/join-requests/{request_id}/{action}")
+def review_group_join_request(project_id: int, request_id: int, action: str, user: User):
+    if action not in {"approve", "reject", "block"}: raise HTTPException(status_code=404, detail="action not found")
+    with db.connect() as con:
+        if _membership(con, project_id, user["id"])["role"] != "owner": raise HTTPException(status_code=403, detail="only group owners can review requests")
+        item = con.execute("SELECT * FROM project_join_requests WHERE id=? AND project_id=? AND status='pending'", (request_id, project_id)).fetchone()
+        if item is None: raise HTTPException(status_code=404, detail="pending request not found")
+        if item["user_id"] == user["id"]: raise HTTPException(status_code=403, detail="you cannot approve your own request")
+        status = {"approve":"accepted", "reject":"declined", "block":"blocked"}[action]
+        con.execute("UPDATE project_join_requests SET status=?,reviewed_by=?,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=? AND status='pending'", (status, user["id"], request_id))
+        if action == "approve":
+            con.execute("INSERT OR IGNORE INTO project_members(project_id,user_id,role) VALUES(?,?,'editor')", (project_id, item["user_id"]))
+            _log_activity(con, project_id, user["id"], "member_joined", "approved a group membership request")
+        con.execute("INSERT INTO notifications(user_id,project_id,actor_id,kind,detail) VALUES(?,?,?,'group_join_response',?)", (item["user_id"], project_id, user["id"], "Your group request was approved." if action == "approve" else "Your group request was not approved."))
+        return {"status": status}
+
+
+@app.get("/api/projects/{project_id}/pinned-messages")
+def pinned_messages(project_id: int, user: User):
+    with db.connect() as con:
+        _membership(con, project_id, user["id"])
+        return [dict(r) for r in con.execute("SELECT m.id,m.body,m.created_at,m.edited_at,m.deleted_at,m.user_id,u.name,u.username,u.avatar FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.pinned_at IS NOT NULL ORDER BY m.pinned_at DESC", (project_id,)).fetchall()]
+
+
+@app.get("/api/projects/{project_id}/messages/{message_id}")
+def get_group_message(project_id: int, message_id: int, user: User):
+    with db.connect() as con:
+        _membership(con, project_id, user["id"])
+        row=con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,u.id user_id,u.name,u.avatar FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.id=?",(project_id,message_id)).fetchone()
+        if row is None: raise HTTPException(status_code=404, detail="message not found")
+        return dict(row)
+
+
+@app.get("/api/group-conversations")
+def group_conversations(user: User):
+    with db.connect() as con:
+        return [dict(r) for r in con.execute("""SELECT p.id project_id,p.name,
+            (SELECT m.body FROM messages m WHERE m.project_id=p.id ORDER BY id DESC LIMIT 1) last_message,
+            (SELECT m.created_at FROM messages m WHERE m.project_id=p.id ORDER BY id DESC LIMIT 1) last_message_at,
+            (SELECT COUNT(*) FROM messages m WHERE m.project_id=p.id AND m.user_id<>? AND m.id>COALESCE((SELECT last_read_message_id FROM group_message_reads r WHERE r.project_id=p.id AND r.user_id=?),0)) unread_count
+            FROM projects p JOIN project_members pm ON pm.project_id=p.id WHERE pm.user_id=? ORDER BY COALESCE(last_message_at,p.created_at) DESC""", (user["id"],user["id"],user["id"])).fetchall()]
 
 
 @app.get("/api/projects/{project_id}")
@@ -256,7 +351,8 @@ def get_project(project_id: int, user: User):
     with db.connect() as con:
         _membership(con, project_id, user["id"])
         project = dict(con.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
-        project["members"] = [dict(row) for row in con.execute("SELECT u.id,u.name,u.username,m.role,m.joined_at FROM project_members m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END,u.name", (project_id,)).fetchall()]
+        project["role"] = _membership(con, project_id, user["id"])["role"]
+        project["members"] = [dict(row) for row in con.execute("SELECT u.id,u.name,u.username,u.avatar,m.role,m.joined_at FROM project_members m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END,u.name", (project_id,)).fetchall()]
         return project
 
 
@@ -476,7 +572,14 @@ def create_comment(task_id: int, body: MessageCreate, user: User):
 def list_messages(project_id: int, user: User, after_id: int = Query(default=0, ge=0)):
     with db.connect() as con:
         _membership(con, project_id, user["id"])
-        return [dict(row) for row in con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,u.id AS user_id,u.name FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.id>? ORDER BY m.id LIMIT 100", (project_id, after_id)).fetchall()]
+        latest = con.execute("SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=?", (project_id,)).fetchone()[0]
+        con.execute("INSERT INTO group_message_reads(project_id,user_id,last_read_message_id) VALUES(?,?,?) ON CONFLICT(project_id,user_id) DO UPDATE SET last_read_message_id=MAX(last_read_message_id,excluded.last_read_message_id)", (project_id,user["id"],latest))
+        if after_id:
+            rows = con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,u.id AS user_id,u.name,u.avatar FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.id>? ORDER BY m.id LIMIT 100", (project_id, after_id)).fetchall()
+        else:
+            rows = con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,u.id AS user_id,u.name,u.avatar FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY m.id DESC LIMIT 100", (project_id,)).fetchall()
+            rows = list(reversed(rows))
+        return [dict(row) for row in rows]
 
 
 @app.post("/api/projects/{project_id}/messages", status_code=201)
@@ -489,7 +592,7 @@ def send_message(project_id: int, body: MessageCreate, user: User):
         _can_edit(role)
         cur = con.execute("INSERT INTO messages(project_id,user_id,body) VALUES(?,?,?)", (project_id, user["id"], text))
         _log_activity(con, project_id, user["id"], "message_sent", "sent a project message")
-        return dict(con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,u.id AS user_id,u.name FROM messages m JOIN users u ON u.id=m.user_id WHERE m.id=?", (cur.lastrowid,)).fetchone())
+        return dict(con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,u.id AS user_id,u.name,u.avatar FROM messages m JOIN users u ON u.id=m.user_id WHERE m.id=?", (cur.lastrowid,)).fetchone())
 
 
 @app.patch("/api/projects/{project_id}/messages/{message_id}")
@@ -505,22 +608,24 @@ def edit_group_message(project_id: int, message_id: int, body: MessageUpdate, us
         _can_edit(_membership(con, project_id, user["id"])["role"])
         if message["user_id"] != user["id"]:
             raise HTTPException(status_code=403, detail="you can only edit your own messages")
+        if message["deleted_at"] is not None: raise HTTPException(status_code=409, detail="message is deleted")
         con.execute("UPDATE messages SET body=?,edited_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?", (text, message_id))
         _log_activity(con, project_id, user["id"], "message_edited", "edited a group message")
-        return dict(con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,u.id AS user_id,u.name FROM messages m JOIN users u ON u.id=m.user_id WHERE m.id=?", (message_id,)).fetchone())
+        return dict(con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,u.id AS user_id,u.name,u.avatar FROM messages m JOIN users u ON u.id=m.user_id WHERE m.id=?", (message_id,)).fetchone())
 
 
 @app.delete("/api/projects/{project_id}/messages/{message_id}", status_code=204)
 def delete_group_message(project_id: int, message_id: int, user: User):
     with db.connect() as con:
         _membership(con, project_id, user["id"])
-        message = con.execute("SELECT user_id FROM messages WHERE id=? AND project_id=?", (message_id, project_id)).fetchone()
+        message = con.execute("SELECT user_id,deleted_at FROM messages WHERE id=? AND project_id=?", (message_id, project_id)).fetchone()
         if message is None:
             raise HTTPException(status_code=404, detail="message not found")
         _can_edit(_membership(con, project_id, user["id"])["role"])
         if message["user_id"] != user["id"]:
             raise HTTPException(status_code=403, detail="you can only delete your own messages")
-        con.execute("DELETE FROM messages WHERE id=?", (message_id,))
+        if message["deleted_at"] is not None: raise HTTPException(status_code=409, detail="message is already deleted")
+        con.execute("UPDATE messages SET body='Message deleted',deleted_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),edited_at=NULL WHERE id=?", (message_id,))
         _log_activity(con, project_id, user["id"], "message_deleted", "deleted a group message")
     return Response(status_code=204)
 
@@ -531,9 +636,10 @@ def pin_group_message(project_id: int, message_id: int, user: User):
         role = _membership(con, project_id, user["id"])["role"]
         if role != "owner":
             raise HTTPException(status_code=403, detail="only group owners can pin messages")
-        row = con.execute("SELECT id FROM messages WHERE id=? AND project_id=?", (message_id, project_id)).fetchone()
+        row = con.execute("SELECT id,deleted_at FROM messages WHERE id=? AND project_id=?", (message_id, project_id)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="message not found")
+        if row["deleted_at"] is not None: raise HTTPException(status_code=409, detail="message is deleted")
         con.execute("UPDATE messages SET pinned_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),pinned_by=? WHERE id=?", (user["id"], message_id))
         _log_activity(con, project_id, user["id"], "message_pinned", "pinned a group message")
         return {"pinned": True}
@@ -571,7 +677,7 @@ def list_people(user: User):
     """Return accepted friends and existing group classmates without exposing email addresses."""
     with db.connect() as con:
         return [dict(row) for row in con.execute("""SELECT DISTINCT u.id,u.name
-            ,u.username FROM users u WHERE u.id<>? AND (
+            ,u.username,u.avatar FROM users u WHERE u.id<>? AND (
             EXISTS(SELECT 1 FROM project_members mine JOIN project_members other ON mine.project_id=other.project_id WHERE mine.user_id=? AND other.user_id=u.id)
             OR EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='accepted' AND ((f.requester_id=? AND f.recipient_id=u.id) OR (f.recipient_id=? AND f.requester_id=u.id)))) ORDER BY u.name""", (user["id"], user["id"], user["id"], user["id"])).fetchall()]
 
@@ -583,18 +689,23 @@ def search_people(user: User, q: str = Query(min_length=3, max_length=24)):
         return []
     term = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     with db.connect() as con:
-        return [dict(row) for row in con.execute("""SELECT u.id,u.name,u.username FROM users u
+        return [dict(row) for row in con.execute("""SELECT u.id,u.name,u.username,u.avatar,
+            CASE WHEN EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='accepted' AND ((f.requester_id=? AND f.recipient_id=u.id) OR (f.recipient_id=? AND f.requester_id=u.id))) THEN 'friends'
+                 WHEN EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='pending' AND f.requester_id=? AND f.recipient_id=u.id) THEN 'request_sent'
+                 WHEN EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='pending' AND f.recipient_id=? AND f.requester_id=u.id) THEN 'incoming_request'
+                 WHEN EXISTS(SELECT 1 FROM project_members mine JOIN project_members theirs ON mine.project_id=theirs.project_id WHERE mine.user_id=? AND theirs.user_id=u.id) THEN 'group_classmate'
+                 ELSE 'not_connected' END AS relationship FROM users u
             WHERE u.id<>? AND u.username LIKE ? ESCAPE '\\' COLLATE NOCASE
             AND NOT EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='blocked' AND
               ((f.requester_id=? AND f.recipient_id=u.id) OR (f.recipient_id=? AND f.requester_id=u.id)))
-            ORDER BY u.username LIMIT 10""", (user["id"], f"{term}%", user["id"], user["id"])).fetchall()]
+            ORDER BY u.username LIMIT 10""", (user["id"],user["id"],user["id"],user["id"],user["id"], user["id"], f"{term}%", user["id"], user["id"])).fetchall()]
 
 
 @app.get("/api/friend-requests")
 def list_friend_requests(user: User):
     with db.connect() as con:
         return [dict(row) for row in con.execute("""SELECT f.id,f.status,f.created_at,f.requester_id,f.recipient_id,
-            u.name,u.username,CASE WHEN f.recipient_id=? THEN 'incoming' ELSE 'outgoing' END AS direction
+            u.name,u.username,u.avatar,CASE WHEN f.recipient_id=? THEN 'incoming' ELSE 'outgoing' END AS direction
             FROM friend_requests f JOIN users u ON u.id=CASE WHEN f.recipient_id=? THEN f.requester_id ELSE f.recipient_id END
             WHERE (f.requester_id=? OR f.recipient_id=?) AND f.status IN ('pending','accepted','blocked') ORDER BY f.id DESC""",
             (user["id"], user["id"], user["id"], user["id"])).fetchall()]
@@ -615,12 +726,14 @@ def send_friend_request(body: FriendRequestCreate, user: User):
         if existing and existing["status"] == "pending":
             if existing["recipient_id"] == user["id"]:
                 con.execute("UPDATE friend_requests SET status='accepted',updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?", (existing["id"],))
+                con.execute("INSERT INTO notifications(user_id,actor_id,kind,detail) VALUES(?,?, 'friend_request_accepted','Your classmate request was accepted.')", (existing["requester_id"],user["id"]))
                 return {"status": "accepted", "id": existing["id"]}
             raise HTTPException(status_code=409, detail="a request is already waiting")
         if existing and existing["status"] == "declined":
             con.execute("UPDATE friend_requests SET requester_id=?,recipient_id=?,status='pending',created_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?", (user["id"], target["id"], existing["id"]))
             return {"id": existing["id"], "status": "pending"}
         cur = con.execute("INSERT INTO friend_requests(requester_id,recipient_id) VALUES(?,?)", (user["id"], target["id"]))
+        con.execute("INSERT INTO notifications(user_id,actor_id,kind,detail) VALUES(?,?,'friend_request','You received a classmate request.')", (target["id"], user["id"]))
         return {"id": cur.lastrowid, "status": "pending"}
 
 
@@ -636,7 +749,19 @@ def respond_friend_request(request_id: int, action: str, user: User):
             raise HTTPException(status_code=403, detail="only the recipient can respond to a pending request")
         status = {"accept": "accepted", "decline": "declined", "block": "blocked"}[action]
         con.execute("UPDATE friend_requests SET status=?,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?", (status, request_id))
+        if action in {"accept", "decline"}:
+            con.execute("INSERT INTO notifications(user_id,actor_id,kind,detail) VALUES(?,?,?,?)", (row["requester_id"], user["id"], f"friend_request_{status}", "Your classmate request was accepted." if action == "accept" else "Your classmate request was declined."))
         return {"id": request_id, "status": status}
+
+
+@app.delete("/api/friend-requests/{request_id}", status_code=204)
+def cancel_friend_request(request_id: int, user: User):
+    with db.connect() as con:
+        row = con.execute("SELECT * FROM friend_requests WHERE id=? AND requester_id=? AND status='pending'", (request_id,user["id"])).fetchone()
+        if row is None: raise HTTPException(status_code=404, detail="pending outgoing request not found")
+        con.execute("UPDATE friend_requests SET status='declined',updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?", (request_id,))
+        con.execute("INSERT INTO notifications(user_id,actor_id,kind,detail) VALUES(?,?, 'friend_request_cancelled','A pending classmate request was cancelled.')", (row["recipient_id"],user["id"]))
+    return Response(status_code=204)
 
 
 @app.get("/api/direct/conversations")
@@ -645,6 +770,7 @@ def list_direct_conversations(user: User):
         rows = con.execute("""SELECT c.id,c.created_at,
             CASE WHEN c.user_a=? THEN b.id ELSE a.id END AS person_id,
             CASE WHEN c.user_a=? THEN b.name ELSE a.name END AS person_name,
+            CASE WHEN c.user_a=? THEN b.avatar ELSE a.avatar END AS person_avatar,
             (SELECT body FROM direct_messages WHERE conversation_id=c.id ORDER BY id DESC LIMIT 1) AS last_message,
             (SELECT created_at FROM direct_messages WHERE conversation_id=c.id ORDER BY id DESC LIMIT 1) AS last_message_at,
             (SELECT COUNT(*) FROM direct_messages dm WHERE dm.conversation_id=c.id AND dm.sender_id<>? AND dm.read_at IS NULL) AS unread_count
@@ -654,7 +780,7 @@ def list_direct_conversations(user: User):
             AND (EXISTS(SELECT 1 FROM project_members mine JOIN project_members theirs ON mine.project_id=theirs.project_id WHERE mine.user_id=? AND theirs.user_id=CASE WHEN c.user_a=? THEN c.user_b ELSE c.user_a END)
               OR EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='accepted' AND ((f.requester_id=c.user_a AND f.recipient_id=c.user_b) OR (f.requester_id=c.user_b AND f.recipient_id=c.user_a))))
             ORDER BY COALESCE(last_message_at,c.created_at) DESC""",
-            (user["id"], user["id"], user["id"], user["id"], user["id"], user["id"], user["id"])).fetchall()
+            (user["id"], user["id"], user["id"], user["id"], user["id"], user["id"], user["id"], user["id"])).fetchall()
         return [dict(row) for row in rows]
 
 
@@ -683,9 +809,13 @@ def list_direct_messages(conversation_id: int, user: User, after_id: int = Query
     with db.connect() as con:
         _direct_conversation(con, conversation_id, user["id"])
         con.execute("UPDATE direct_messages SET read_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE conversation_id=? AND sender_id<>? AND read_at IS NULL", (conversation_id, user["id"]))
-        rows = con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,u.name AS sender_name
-            FROM direct_messages dm JOIN users u ON u.id=dm.sender_id
-            WHERE dm.conversation_id=? AND dm.id>? ORDER BY dm.id LIMIT 100""", (conversation_id, after_id)).fetchall()
+        if after_id:
+            rows=con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.deleted_at,u.name AS sender_name,u.avatar
+                FROM direct_messages dm JOIN users u ON u.id=dm.sender_id WHERE dm.conversation_id=? AND dm.id>? ORDER BY dm.id LIMIT 100""",(conversation_id,after_id)).fetchall()
+        else:
+            rows=con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.deleted_at,u.name AS sender_name,u.avatar
+                FROM direct_messages dm JOIN users u ON u.id=dm.sender_id WHERE dm.conversation_id=? ORDER BY dm.id DESC LIMIT 100""",(conversation_id,)).fetchall()
+            rows=list(reversed(rows))
         return [dict(row) for row in rows]
 
 
@@ -697,8 +827,37 @@ def send_direct_message(conversation_id: int, body: MessageCreate, user: User):
     with db.connect() as con:
         _direct_conversation(con, conversation_id, user["id"])
         cursor = con.execute("INSERT INTO direct_messages(conversation_id,sender_id,body) VALUES(?,?,?)", (conversation_id, user["id"], text))
-        return dict(con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,u.name AS sender_name
+        conversation = con.execute("SELECT user_a,user_b FROM direct_conversations WHERE id=?", (conversation_id,)).fetchone()
+        recipient = conversation["user_b"] if conversation["user_a"] == user["id"] else conversation["user_a"]
+        con.execute("INSERT INTO notifications(user_id,actor_id,kind,detail) VALUES(?,?, 'direct_message','You received a new message.')", (recipient,user["id"]))
+        return dict(con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.deleted_at,u.name AS sender_name,u.avatar
             FROM direct_messages dm JOIN users u ON u.id=dm.sender_id WHERE dm.id=?""", (cursor.lastrowid,)).fetchone())
+
+
+@app.patch("/api/direct/conversations/{conversation_id}/messages/{message_id}")
+def edit_direct_message(conversation_id: int, message_id: int, body: MessageUpdate, user: User):
+    text=body.body.strip()
+    if not text: raise HTTPException(status_code=422, detail="message cannot be blank")
+    with db.connect() as con:
+        _direct_conversation(con,conversation_id,user["id"])
+        row=con.execute("SELECT sender_id,deleted_at FROM direct_messages WHERE id=? AND conversation_id=?",(message_id,conversation_id)).fetchone()
+        if row is None: raise HTTPException(status_code=404,detail="message not found")
+        if row["sender_id"]!=user["id"]: raise HTTPException(status_code=403,detail="you can only edit your own messages")
+        if row["deleted_at"] is not None: raise HTTPException(status_code=409,detail="message is deleted")
+        con.execute("UPDATE direct_messages SET body=?,edited_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?",(text,message_id))
+        return dict(con.execute("SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.created_at,dm.edited_at,dm.deleted_at,u.name sender_name,u.avatar FROM direct_messages dm JOIN users u ON u.id=dm.sender_id WHERE dm.id=?",(message_id,)).fetchone())
+
+
+@app.delete("/api/direct/conversations/{conversation_id}/messages/{message_id}",status_code=204)
+def delete_direct_message(conversation_id: int, message_id: int, user: User):
+    with db.connect() as con:
+        _direct_conversation(con,conversation_id,user["id"])
+        row=con.execute("SELECT sender_id,deleted_at FROM direct_messages WHERE id=? AND conversation_id=?",(message_id,conversation_id)).fetchone()
+        if row is None: raise HTTPException(status_code=404,detail="message not found")
+        if row["sender_id"]!=user["id"]: raise HTTPException(status_code=403,detail="you can only delete your own messages")
+        if row["deleted_at"] is not None: raise HTTPException(status_code=409,detail="message is already deleted")
+        con.execute("UPDATE direct_messages SET body='Message deleted',deleted_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),edited_at=NULL WHERE id=?",(message_id,))
+    return Response(status_code=204)
 
 
 @app.get("/api/activity")

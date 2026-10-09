@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -53,12 +54,52 @@ def initialize() -> None:
                     candidate = f"{handle[:20]}{suffix}"; suffix += 1
                 con.execute("UPDATE users SET username=? WHERE id=?", (candidate, row["id"]))
         con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)")
+        user_columns = {row["name"] for row in con.execute("PRAGMA table_info(users)")}
+        for column, definition in (("avatar", "TEXT NOT NULL DEFAULT 'violet'"), ("bio", "TEXT NOT NULL DEFAULT ''"), ("theme", "TEXT NOT NULL DEFAULT 'light'")):
+            if column not in user_columns:
+                con.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
         con.execute("""CREATE TABLE IF NOT EXISTS projects (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 120),
             description TEXT NOT NULL DEFAULT '',
             created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )""")
+        project_columns = {row["name"] for row in con.execute("PRAGMA table_info(projects)")}
+        if "join_code" not in project_columns:
+            con.execute("ALTER TABLE projects ADD COLUMN join_code TEXT")
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        existing_codes = {row[0] for row in con.execute("SELECT join_code FROM projects WHERE join_code IS NOT NULL")}
+        for row in con.execute("SELECT id FROM projects WHERE join_code IS NULL").fetchall():
+            while True:
+                code = "SP-" + "".join(secrets.choice(alphabet) for _ in range(14))
+                if code not in existing_codes:
+                    con.execute("UPDATE projects SET join_code=? WHERE id=?", (code, row["id"]))
+                    existing_codes.add(code)
+                    break
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_join_code ON projects(join_code)")
+        con.execute("""CREATE TABLE IF NOT EXISTS project_join_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','declined','cancelled','blocked')),
+            reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )""")
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_project_join_pending ON project_join_requests(project_id,user_id) WHERE status='pending'")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_project_join_owner ON project_join_requests(project_id,status,created_at)")
+        con.execute("""CREATE TABLE IF NOT EXISTS join_code_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            attempted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )""")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_join_code_attempts_user ON join_code_attempts(user_id,attempted_at)")
+        con.execute("""CREATE TABLE IF NOT EXISTS group_message_reads (
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            last_read_message_id INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(project_id,user_id)
         )""")
         con.execute("""CREATE TABLE IF NOT EXISTS project_members (
             project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -117,6 +158,9 @@ def initialize() -> None:
             read_at TEXT,
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
         )""")
+        direct_columns = {row["name"] for row in con.execute("PRAGMA table_info(direct_messages)")}
+        if "edited_at" not in direct_columns: con.execute("ALTER TABLE direct_messages ADD COLUMN edited_at TEXT")
+        if "deleted_at" not in direct_columns: con.execute("ALTER TABLE direct_messages ADD COLUMN deleted_at TEXT")
         con.execute("""CREATE TABLE IF NOT EXISTS activity (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
@@ -169,6 +213,8 @@ def initialize() -> None:
             con.execute("ALTER TABLE messages ADD COLUMN pinned_at TEXT")
         if "pinned_by" not in message_columns:
             con.execute("ALTER TABLE messages ADD COLUMN pinned_by INTEGER REFERENCES users(id) ON DELETE SET NULL")
+        if "deleted_at" not in message_columns:
+            con.execute("ALTER TABLE messages ADD COLUMN deleted_at TEXT")
         con.execute("""CREATE TABLE IF NOT EXISTS task_assignees (
             task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

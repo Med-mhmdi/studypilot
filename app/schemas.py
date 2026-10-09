@@ -23,6 +23,9 @@ class Login(RequestModel):
 class ProfileUpdate(RequestModel):
     name: str = Field(min_length=1, max_length=80)
     username: str | None = Field(default=None, min_length=3, max_length=24, pattern=r"^[A-Za-z0-9._-]+$")
+    avatar: str | None = Field(default=None, pattern=r"^(violet|ocean|mint|coral|sun)$")
+    bio: str | None = Field(default=None, max_length=160)
+    theme: str | None = Field(default=None, pattern=r"^(light|dark)$")
 
 
 class PasswordUpdate(RequestModel):
@@ -50,6 +53,10 @@ class MessageUpdate(RequestModel):
 
 class FriendRequestCreate(RequestModel):
     username: str = Field(min_length=3, max_length=24)
+
+
+class JoinCodeSubmit(RequestModel):
+    code: str = Field(min_length=10, max_length=24)
 
 
 class InviteAccept(RequestModel):
