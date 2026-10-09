@@ -1,4 +1,4 @@
-"""Small SQLite persistence layer for the single-user MVP."""
+"""SQLite persistence and additive, backward-compatible schema migration."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ def connect() -> Iterator[sqlite3.Connection]:
     connection = sqlite3.connect(path, timeout=10)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA journal_mode = WAL")
     try:
         with connection:
             yield connection
@@ -28,23 +29,100 @@ def connect() -> Iterator[sqlite3.Connection]:
 
 
 def initialize() -> None:
-    with connect() as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS tasks (
+    """Create new tables and add nullable task ownership without touching rows."""
+    with connect() as con:
+        con.execute("""CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 80),
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 120),
+            description TEXT NOT NULL DEFAULT '',
+            created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS project_members (
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role TEXT NOT NULL CHECK(role IN ('owner','editor','viewer')),
+            joined_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+            PRIMARY KEY(project_id,user_id)
+        )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS invitations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            email TEXT NOT NULL COLLATE NOCASE,
+            token_hash TEXT NOT NULL UNIQUE,
+            role TEXT NOT NULL CHECK(role IN ('editor','viewer')),
+            invited_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            expires_at TEXT NOT NULL,
+            accepted_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            body TEXT NOT NULL CHECK(length(body) BETWEEN 1 AND 2000),
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            body TEXT NOT NULL CHECK(length(body) BETWEEN 1 AND 2000),
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS activity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+            actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            kind TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            read_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )""")
+        columns = {row["name"] for row in con.execute("PRAGMA table_info(tasks)")}
+        if not columns:
+            con.execute("""CREATE TABLE tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 160),
-                course TEXT NOT NULL DEFAULT '',
-                due_date TEXT NOT NULL,
-                priority TEXT NOT NULL CHECK(priority IN ('low', 'medium', 'high')),
-                status TEXT NOT NULL CHECK(status IN ('todo', 'in_progress', 'done')),
+                course TEXT NOT NULL DEFAULT '', due_date TEXT NOT NULL,
+                priority TEXT NOT NULL CHECK(priority IN ('low','medium','high')),
+                status TEXT NOT NULL CHECK(status IN ('todo','in_progress','done')),
                 description TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-            )
-            """
-        )
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+            )""")
+            columns = {row["name"] for row in con.execute("PRAGMA table_info(tasks)")}
+        if "owner_id" not in columns:
+            con.execute("ALTER TABLE tasks ADD COLUMN owner_id INTEGER REFERENCES users(id) ON DELETE CASCADE")
+        if "project_id" not in columns:
+            con.execute("ALTER TABLE tasks ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE")
+        con.execute("""CREATE TABLE IF NOT EXISTS task_assignees (
+            task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            assigned_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            PRIMARY KEY(task_id,user_id)
+        )""")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner_id, due_date)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id, due_date)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_messages_project ON messages(project_id,id)")
 
 
 def row_to_task(row: sqlite3.Row) -> dict:
-    return dict(row)
+    task = dict(row)
+    return task

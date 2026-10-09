@@ -1,52 +1,48 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f5f7fb">
-  <title>StudyPilot — Assignment planner</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f7f8fc">
+  <title>StudyPilot — Your study, together</title><link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <main class="shell">
-    <header class="topbar">
+  <main id="auth-screen" class="auth-screen" hidden>
+    <section class="auth-card">
       <a class="brand" href="/"><span class="brand-mark">S</span><span>StudyPilot</span></a>
-      <span class="local-label"><span class="live-dot"></span> Your study dashboard</span>
-    </header>
-
-    <section class="intro">
-      <div><p class="eyebrow">STAY AHEAD OF THE DEADLINE</p><h1>Make room for<br><span>your best work.</span></h1>
-      <p class="intro-copy">One clear view of what’s due, what’s next, and what you’ve finished.</p></div>
-      <div class="intro-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="paper"><span>✦</span><i></i><i></i><i></i></div><div class="sparkle sparkle-a">✦</div><div class="sparkle sparkle-b">·</div></div>
-    </section>
-
-    <section class="stats" aria-label="Assignment summary">
-      <article class="stat-card"><span class="stat-icon lilac">◷</span><div><span class="stat-label">UP NEXT</span><strong id="up-next">—</strong></div></article>
-      <article class="stat-card"><span class="stat-icon peach">↗</span><div><span class="stat-label">IN PROGRESS</span><strong id="in-progress">0</strong></div></article>
-      <article class="stat-card"><span class="stat-icon mint">✓</span><div><span class="stat-label">COMPLETED</span><strong id="completed">0</strong></div></article>
-    </section>
-
-    <section class="workspace">
-      <div class="section-head"><div><p class="eyebrow">YOUR WORKLOAD</p><h2>Assignments</h2></div><button class="primary-button" id="new-task"><span>＋</span> New assignment</button></div>
-      <div class="toolbar"><div class="filters" role="group" aria-label="Filter assignments"><button class="filter active" data-filter="all">All <span id="count-all">0</span></button><button class="filter" data-filter="todo">To do</button><button class="filter" data-filter="in_progress">In progress</button><button class="filter" data-filter="done">Done</button></div><label class="course-filter"><span>Course</span><select id="course-filter"><option value="">All courses</option></select></label></div>
-      <div id="task-list" class="task-list" aria-live="polite"></div>
-      <div id="empty-state" class="empty-state"><div class="empty-check">✦</div><h3>A fresh page</h3><p>Add your next assignment and we’ll help you keep it in view.</p><button class="text-button" id="empty-add">＋ Add an assignment</button></div>
-    </section>
-    <footer><span>Small steps count.</span><span>StudyPilot · MVP</span></footer>
+      <p class="eyebrow">A LITTLE MORE IN SYNC</p><h1 id="auth-title">Welcome back.</h1><p class="auth-copy">Keep your assignments moving and your study group on the same page.</p>
+      <form id="auth-form">
+        <label class="field" id="name-field" hidden>Your name<input name="name" maxlength="80" autocomplete="name" placeholder="How should we call you?"></label>
+        <label class="field">School email<input name="email" type="email" autocomplete="email" required placeholder="you@school.edu"></label>
+        <label class="field">Password<input name="password" type="password" autocomplete="current-password" minlength="10" required placeholder="At least 10 characters"></label>
+        <p class="form-error" id="auth-error" role="alert"></p><button class="primary-button full-button" type="submit" id="auth-submit">Sign in <span>→</span></button>
+      </form>
+      <button class="text-button auth-switch" id="auth-switch">New to StudyPilot? Create an account</button>
+    </section><div class="auth-decoration" aria-hidden="true"><span>✦</span><i></i></div>
   </main>
 
-  <dialog id="task-dialog">
-    <form id="task-form">
-      <div class="dialog-head"><div><p class="eyebrow">PLAN YOUR NEXT STEP</p><h2 id="dialog-title">New assignment</h2></div><button type="button" class="icon-button" id="close-dialog" aria-label="Close">×</button></div>
-      <input type="hidden" id="task-id">
-      <label class="field">Assignment title<input id="title" name="title" maxlength="160" required placeholder="e.g. Containerize the API"></label>
-      <div class="field-row"><label class="field">Course<input id="course" name="course" maxlength="80" placeholder="e.g. DevOps"></label><label class="field">Due date<input id="due-date" name="due_date" type="date" required></label></div>
-      <div class="field-row"><label class="field">Priority<select id="priority" name="priority"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></label><label class="field" id="status-wrap">Status<select id="status" name="status"><option value="todo">To do</option><option value="in_progress">In progress</option><option value="done">Done</option></select></label></div>
-      <label class="field">Notes <span class="optional">(optional)</span><textarea id="description" name="description" rows="3" maxlength="2000" placeholder="A quick note about the next step…"></textarea></label>
-      <p id="form-error" class="form-error" role="alert"></p>
-      <div class="dialog-actions"><button type="button" class="danger-button" id="delete-task">Delete</button><span class="action-spacer"></span><button type="button" class="secondary-button" id="cancel-dialog">Cancel</button><button class="primary-button" type="submit" id="save-task">Save assignment <span>→</span></button></div>
-    </form>
-  </dialog>
+  <div id="app-screen" hidden>
+    <header class="topbar"><div class="topbar-inner"><a class="brand" href="/"><span class="brand-mark">S</span><span>StudyPilot</span></a>
+      <nav class="main-nav" aria-label="Main navigation"><button class="nav-button active" data-view="assignments">My assignments</button><button class="nav-button" data-view="projects">Study groups <span id="project-count" class="nav-count">0</span></button><button class="nav-button" data-view="activity">Activity</button></nav>
+      <div class="account-area"><button id="notification-button" class="icon-button notification-button" aria-label="Notifications">♧<span id="notification-dot" hidden></span></button><button id="account-button" class="account-button"><span id="avatar" class="avatar">S</span><span id="account-name">Student</span><span class="chevron">⌄</span></button><div id="account-menu" class="account-menu" hidden><button id="profile-open">Profile & settings</button><button id="logout-button">Sign out</button></div></div>
+    </div></header>
+    <main class="shell">
+      <section id="view-assignments" class="view active-view">
+        <section class="intro"><div><p class="eyebrow">YOUR WEEK, WITH A PLAN</p><h1>Make room for<br><span>your best work.</span></h1><p class="intro-copy">A calmer view of what’s due, what’s next, and the people you’re building it with.</p></div><div class="intro-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="paper"><span>✦</span><i></i><i></i><i></i></div><div class="sparkle sparkle-a">✦</div><div class="sparkle sparkle-b">·</div></div></section>
+        <section class="stats"><article class="stat-card"><span class="stat-icon lilac">◷</span><div><span class="stat-label">UP NEXT</span><strong id="up-next">—</strong></div></article><article class="stat-card"><span class="stat-icon peach">↗</span><div><span class="stat-label">IN PROGRESS</span><strong id="in-progress">0</strong></div></article><article class="stat-card"><span class="stat-icon mint">✓</span><div><span class="stat-label">COMPLETED</span><strong id="completed">0</strong></div></article></section>
+        <section class="workspace"><div class="section-head"><div><p class="eyebrow">YOUR WORKLOAD</p><h2 id="assignment-heading">Assignments</h2><p id="assignment-subtitle" class="section-subtitle">Your personal plan, all in one place.</p></div><button class="primary-button" id="new-task"><span>＋</span> New assignment</button></div>
+          <div class="toolbar"><div class="filters" role="group" aria-label="Filter assignments"><button class="filter active" data-filter="all">All <span id="count-all">0</span></button><button class="filter" data-filter="todo">To do</button><button class="filter" data-filter="in_progress">In progress</button><button class="filter" data-filter="done">Done</button></div><label class="course-filter"><span>Course</span><select id="course-filter"><option value="">All courses</option></select></label></div>
+          <div id="task-list" class="task-list" aria-live="polite"></div><div id="empty-state" class="empty-state"><div class="empty-check">✦</div><h3>A fresh page</h3><p>Add your next assignment and we’ll help you keep it in view.</p><button class="text-button" id="empty-add">＋ Add an assignment</button></div>
+        </section>
+      </section>
+      <section id="view-projects" class="view"><div class="page-heading"><div><p class="eyebrow">BETTER, TOGETHER</p><h1>Your study groups</h1><p>Shared plans, helpful notes, and one place to keep everyone in sync.</p></div><button class="primary-button" id="new-project">＋ New group</button></div><div id="projects-grid" class="projects-grid"></div><section id="project-detail" class="project-detail" hidden></section></section>
+      <section id="view-activity" class="view"><div class="page-heading"><div><p class="eyebrow">A LITTLE PROGRESS, EVERY DAY</p><h1>Recent activity</h1><p>Updates from your assignments and study groups.</p></div></div><div id="activity-list" class="activity-list"></div></section>
+      <footer><span>Small steps count.</span><span>StudyPilot · Your study, together</span></footer>
+    </main>
+  </div>
+
+  <dialog id="task-dialog"><form id="task-form"><div class="dialog-head"><div><p class="eyebrow">PLAN YOUR NEXT STEP</p><h2 id="dialog-title">New assignment</h2></div><button type="button" class="icon-button" data-close="task-dialog" aria-label="Close">×</button></div><input type="hidden" id="task-id"><label class="field">Assignment title<input id="title" name="title" maxlength="160" required placeholder="e.g. Containerize the API"></label><div class="field-row"><label class="field">Course<input id="course" name="course" maxlength="80" placeholder="e.g. DevOps"></label><label class="field">Due date<input id="due-date" name="due_date" type="date" required></label></div><div class="field-row"><label class="field">Priority<select id="priority" name="priority"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></label><label class="field" id="status-wrap">Status<select id="status" name="status"><option value="todo">To do</option><option value="in_progress">In progress</option><option value="done">Done</option></select></label></div><label class="field" id="assignee-wrap" hidden>Assign to teammates<select id="assignees" multiple size="3"></select><small>Use Ctrl or Command to select more than one.</small></label><label class="field">Notes <span class="optional">(optional)</span><textarea id="description" name="description" rows="3" maxlength="2000" placeholder="A quick note about the next step…"></textarea></label><p id="form-error" class="form-error" role="alert"></p><div class="dialog-actions"><button type="button" class="danger-button" id="delete-task">Delete</button><span class="action-spacer"></span><button type="button" class="secondary-button" data-close="task-dialog">Cancel</button><button class="primary-button" type="submit">Save assignment <span>→</span></button></div></form></dialog>
+  <dialog id="project-dialog"><form id="project-form"><div class="dialog-head"><div><p class="eyebrow">MAKE IT A TEAM THING</p><h2>Start a study group</h2></div><button type="button" class="icon-button" data-close="project-dialog" aria-label="Close">×</button></div><label class="field">Group name<input name="name" maxlength="120" required placeholder="e.g. Biology lab team"></label><label class="field">What are you working on?<textarea name="description" maxlength="2000" rows="3" placeholder="A little context helps everyone get started."></textarea></label><p id="project-error" class="form-error"></p><div class="dialog-actions"><span class="action-spacer"></span><button type="button" class="secondary-button" data-close="project-dialog">Cancel</button><button class="primary-button">Create group →</button></div></form></dialog>
+  <dialog id="invite-dialog"><form id="invite-form"><div class="dialog-head"><div><p class="eyebrow">GROW YOUR GROUP</p><h2>Invite a classmate</h2></div><button type="button" class="icon-button" data-close="invite-dialog" aria-label="Close">×</button></div><p class="dialog-note">Create an invite for the email they use on StudyPilot. You can copy the invite link and send it wherever your group chats.</p><label class="field">Classmate’s email<input name="email" type="email" required placeholder="classmate@school.edu"></label><label class="field">Access<select name="role"><option value="editor">Can help edit</option><option value="viewer">Can view</option></select></label><p id="invite-error" class="form-error"></p><div class="invite-result" id="invite-result" hidden></div><div class="dialog-actions"><span class="action-spacer"></span><button type="button" class="secondary-button" data-close="invite-dialog">Done</button><button class="primary-button" id="invite-submit">Create invite</button></div></form></dialog>
+  <dialog id="profile-dialog"><form id="profile-form"><div class="dialog-head"><div><p class="eyebrow">YOUR ACCOUNT</p><h2>Profile & settings</h2></div><button type="button" class="icon-button" data-close="profile-dialog" aria-label="Close">×</button></div><label class="field">Display name<input name="name" maxlength="80" required></label><label class="field">Email address<input id="profile-email" disabled></label><div class="settings-divider"></div><h3>Change password</h3><label class="field">Current password<input name="current_password" type="password" autocomplete="current-password"></label><label class="field">New password <span class="optional">(10 characters or more)</span><input name="new_password" type="password" minlength="10" autocomplete="new-password"></label><p id="profile-error" class="form-error"></p><p id="profile-saved" class="success-note"></p><div class="dialog-actions"><span class="action-spacer"></span><button type="button" class="secondary-button" data-close="profile-dialog">Close</button><button class="primary-button">Save changes</button></div></form></dialog>
+  <dialog id="notifications-dialog"><div class="dialog-head"><div><p class="eyebrow">STAY IN THE LOOP</p><h2>Notifications</h2></div><button type="button" class="icon-button" data-close="notifications-dialog" aria-label="Close">×</button></div><div id="notifications-list" class="notifications-list"></div><div class="dialog-actions"><span class="action-spacer"></span><button class="secondary-button" data-close="notifications-dialog">Close</button></div></dialog>
   <script src="/static/app.js" defer></script>
-</body>
-</html>
+</body></html>

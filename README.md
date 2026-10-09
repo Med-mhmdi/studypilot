@@ -1,84 +1,74 @@
 # StudyPilot
 
-A small student assignment planner built with FastAPI and SQLite. It is designed as the Task 1 DevOps MVP and leaves an opt-in OpenTelemetry stack for Task 2.
+StudyPilot is a student assignment planner with accounts and shared study groups. It uses FastAPI and SQLite and runs locally or in the existing Docker/Dokku setup.
 
-## What works
+## Features
 
-- Add, edit, complete, filter, and delete assignments.
-- Keep assignment data in a local SQLite database.
-- Health check at `/health` and API documentation at `/docs`.
-- Run locally with Python, or build and run the same app with Docker.
-- CI runs tests on GitHub-hosted runners. Deploys from `main` to the separate Dokku app `studypilot` using the Dell's repository self-hosted runner.
+- Personal assignments with due dates, courses, priority, status, notes, and filters.
+- Account registration, sign-in/out, display name and password settings. Passwords are stored as salted scrypt hashes.
+- Private personal assignments and project membership checks on every shared-data API.
+- Shared projects with owner, editor, and viewer roles; email-bound, expiring invitations; and multi-user task assignments.
+- Project chat with four-second polling, assignment comments, recent activity, and in-app notifications.
+- Responsive layouts for mobile, tablet, and desktop.
+- Additive SQLite migration: the existing task table and rows are retained. The first account created claims legacy tasks that do not yet have an owner.
 
-## Run on Windows with VS Code
+## Run locally
 
-1. Open this `studypilot` folder in VS Code.
-2. In the VS Code terminal, create and activate an environment:
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
 
-   ```powershell
-   py -3.12 -m venv .venv
-   .\.venv\Scripts\Activate.ps1
-   python -m pip install -r requirements.txt
-   ```
+Open <http://127.0.0.1:8000>. SQLite is stored at `data/studypilot.db`. The server creates a persistent signing key beside that database on first run. Back up that key with the database; changing it signs out active sessions. For a hosted deployment, set a long random `SESSION_SECRET` in the Dokku app configuration and set `COOKIE_SECURE=true` when traffic uses HTTPS. Keep the database and key in persistent private storage. The app does not expose personal or project data to anonymous requests.
 
-   Python 3.11 or newer is supported; Python 3.12 is the version used in CI. If PowerShell blocks activation, run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` in that terminal, then activate again.
-3. Start the app:
+The first account created in a fresh database becomes the first user. For an existing database, the first registered account claims legacy unowned tasks, so register the existing owner before sharing the app address with classmates. New users only see their own assignments and projects to which they have been invited. Invitations are created in the app and returned as a link to share through the group’s usual channel; StudyPilot does not send email.
 
-   ```powershell
-   uvicorn app.main:app --reload
-   ```
-
-4. Open <http://127.0.0.1:8000>. The SQLite file is created at `data/studypilot.db`.
-
-## Verify locally
+## Run tests
 
 ```powershell
 python -m pip install -r requirements-dev.txt
-python -m pytest
+python -m pytest -q
 ```
 
 ## Docker
 
 ```powershell
 docker build -t studypilot .
-docker run --rm -p 8080:8000 -v studypilot-data:/app/data studypilot
+docker run --rm -p 8080:8000 -v studypilot-data:/app/data `
+  -e SESSION_SECRET="replace-with-a-long-random-secret" studypilot
 ```
 
-Then open <http://127.0.0.1:8080>. The named volume preserves assignments when the container is replaced.
+Open <http://127.0.0.1:8080>. Keep the named volume and `SESSION_SECRET` private and persistent. When serving over HTTPS, also set `COOKIE_SECURE=true`; browsers require HTTPS for secure cookies.
 
-## GitHub Desktop and Actions
+## GitHub Actions and Dokku
 
-Use GitHub Desktop to add this folder as an existing local repository after creating the empty GitHub repository. Commit and push the project from GitHub Desktop. The workflow at `.github/workflows/ci-cd.yml` tests every push and pull request on GitHub-hosted Ubuntu. Only a push to `main` triggers deployment, and that job is restricted to a runner labeled `self-hosted`, `linux`, `x64`, `dokku`.
+The existing `.github/workflows/ci-cd.yml` remains intact: GitHub-hosted runners run tests, then trusted pushes to `main` deploy to the separate `studypilot` Dokku app through the existing self-hosted runner. No deployment was run as part of this upgrade.
 
 Before enabling deployment:
 
-1. Install or update the GitHub Actions runner on the Dell and add the custom `dokku` label. Register it for this repository only. Keep it updated and do not allow untrusted pull-request code to run on it. Tests run on GitHub-hosted runners; only trusted pushes to `main` reach the Dell.
-2. Create a **new** Dokku app named `studypilot`; do not change `demo-app` or Portainer. On the Dell, run `dokku apps:create studypilot`. The workflow sets its deploy branch to `main`. Assign this app a **unique hostname**; don't reuse the demo app's hostname. For a LAN-only test you can use `dokku domains:add studypilot studypilot.test`, then add `192.168.1.105 studypilot.test` to the Huawei's Windows hosts file as administrator. Dokku routes this hostname through the existing web proxy, so it does not need a new host port and does not replace the app on port 80.
-3. As the runner's Linux user on the Dell, generate a dedicated SSH key (`ssh-keygen -t ed25519 -f ~/.ssh/studypilot-deploy -C studypilot-actions`). Add the public key using `dokku ssh-keys:add studypilot-actions ~/.ssh/studypilot-deploy.pub`. Put the private key only in the GitHub secret. In the GitHub repository's `Settings → Secrets and variables → Actions`, set these secrets:
-   - `DOKKU_HOST`: hostname or IP reachable from the Dell runner (often `localhost` when the runner and Dokku are on the same server).
-   - `DOKKU_SSH_PRIVATE_KEY`: private half of the dedicated deployment key.
-   - `DOKKU_KNOWN_HOSTS`: the verified SSH host-key line for `DOKKU_HOST`.
-4. In `Settings → Environments`, create `production` and optionally require approval. Protect `main` so only reviewed commits can deploy.
+1. Register the Dell's Actions runner for this repository only, with labels `self-hosted`, `linux`, `x64`, and `dokku`. Keep it updated and restrict untrusted pull-request code from running on it.
+2. Use the existing separate Dokku app named `studypilot`. Give it its own hostname; do not change `demo-app`, Portainer, or the existing site. Dokku routes through its current proxy.
+3. Configure the deploy secrets in GitHub repository settings: `DOKKU_HOST`, `DOKKU_SSH_PRIVATE_KEY`, and the verified `DOKKU_KNOWN_HOSTS` line. Use a dedicated deployment key.
+4. Set a persistent random `SESSION_SECRET` and, for an HTTPS hostname, `COOKIE_SECURE=true` in the Dokku app environment. Keep the existing SQLite volume persistent so assignments and accounts survive deploys.
+5. Protect `main` and review the first GitHub Actions and Dokku deployment.
 
-Do not put keys, tokens, or real passwords in this repository. The deployment job pushes to `dokku@DOKKU_HOST:studypilot`; it does not bind a new host port or modify the existing Dokku apps. The first deploy requires the runner, Dokku app, key, host-key secret, and GitHub settings above. I cannot complete those account/server steps from this workspace.
+The workflow uses strict SSH host-key checking and deploys only after tests pass. Keep private keys and real passwords out of the repository and workflow output.
 
-## Task 2: observability extension
+## HTTP API overview
 
-The app has optional OpenTelemetry instrumentation controlled by `OTEL_ENABLED`. `compose.observability.yml` starts an OpenTelemetry Collector, Prometheus, Grafana, Loki, and Jaeger locally. Its dashboards are intentionally private to the local machine via loopback-only host bindings and use ports that avoid Portainer's 8000 and the existing site's 80. Start with:
+- `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`
+- `GET/POST /api/tasks`, `GET/PATCH/DELETE /api/tasks/{id}`
+- `GET/POST /api/projects`, `GET /api/projects/{id}`
+- `POST /api/projects/{id}/invites`, `POST /api/invitations/{token}/accept`
+- `GET/POST /api/projects/{id}/messages` (poll with `after_id`)
+- `GET/POST /api/tasks/{id}/comments`
+- `GET /api/activity`, `GET /api/notifications`, `POST /api/notifications/read`
+- `PATCH /api/profile`, `POST /api/profile/password`
 
-```powershell
-docker compose -f compose.observability.yml up --build
-```
+All account, assignment, project, chat, comment, activity, and notification APIs require a signed-in session. `GET /health` reports service readiness only. Password reset by email and outbound invitation email are not included in this MVP.
 
-Use `http://localhost:13000` for Grafana, `http://localhost:19090` for Prometheus, and `http://localhost:16687` for Jaeger. Grafana's local demo login is `admin` / `change-me-local`; change it through `GRAFANA_PASSWORD` before running the stack on any shared machine. Prometheus, Loki, and Jaeger are provisioned as Grafana data sources. This is a learning/demo stack, not a hardened production monitoring deployment. Do not publish these ports to the internet. For Dokku, deploy this stack separately after reviewing memory and storage capacity on the Dell.
+## Task 2 observability — postponed until October 30
 
-## API quick reference
-
-- `GET /api/tasks?status=todo&course=DevOps` — list and filter.
-- `POST /api/tasks` — create a task with JSON fields `title`, `course`, `due_date` (`YYYY-MM-DD`), `priority` (`low`, `medium`, `high`), `description`.
-- `GET /api/tasks/{id}` — read one task.
-- `PATCH /api/tasks/{id}` — update provided fields.
-- `DELETE /api/tasks/{id}` — delete one task.
-- `GET /health` — health/readiness response.
-
-All sample data should be fictional. This MVP has no accounts or multi-user access control; do not expose it publicly with personal assignment data until authentication is added.
+The pre-existing optional observability files are unchanged in this upgrade. Task 2 work remains postponed until October 30; the stack was not started or modified here. The existing local setup binds its dashboards to loopback; it is a learning stack, not hardened production monitoring. Do not publish its ports to the internet.
