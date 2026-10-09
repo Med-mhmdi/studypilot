@@ -1,15 +1,16 @@
 # StudyPilot
 
-StudyPilot is a student assignment planner with accounts and shared study groups. It uses FastAPI and SQLite and runs locally or in the existing Docker/Dokku setup.
+StudyPilot is a collaborative student workspace for assignments and study groups. It uses FastAPI and SQLite and runs locally or in the existing Docker/Dokku setup.
 
 ## Features
 
-- Personal assignments with due dates, courses, priority, status, notes, and filters.
+- A dashboard Kanban board with To do, In progress, and Done transitions; search, course filters, deadlines, and assignment comments.
 - Account registration, sign-in/out, display name and password settings. Passwords are stored as salted scrypt hashes.
 - Private personal assignments and project membership checks on every shared-data API.
-- Shared projects with owner, editor, and viewer roles; email-bound, expiring invitations; and multi-user task assignments.
-- Project chat with four-second polling, assignment comments, recent activity, and in-app notifications.
-- Responsive layouts for mobile, tablet, and desktop.
+- Shared group workspaces with owner, editor, and viewer roles; email-bound, expiring invitation links/codes; team assignment; and project milestones.
+- Group discussion and private 1:1 messages between classmates who share a group. Messages poll every four seconds and show unread counts.
+- Separate URL-addressable Dashboard, Groups, Calendar, and Messages views; in-app notifications and a saved dark-mode setting.
+- Responsive layouts for mobile, tablet, and desktop, with loading, error, and empty states.
 - Additive SQLite migration: the existing task table and rows are retained. The first account created claims legacy tasks that do not yet have an owner.
 
 ## Run locally
@@ -22,6 +23,17 @@ uvicorn app.main:app --reload
 ```
 
 Open <http://127.0.0.1:8000>. SQLite is stored at `data/studypilot.db`. The server creates a persistent signing key beside that database on first run. Back up that key with the database; changing it signs out active sessions. For a hosted deployment, set a long random `SESSION_SECRET` in the Dokku app configuration and set `COOKIE_SECURE=true` when traffic uses HTTPS. Keep the database and key in persistent private storage. The app does not expose personal or project data to anonymous requests.
+
+For an isolated local preview on port **8765**, use a separate SQLite filename so your normal database stays untouched:
+
+```powershell
+$env:DB_PATH = "data/studypilot-v3-preview.db"
+$env:SESSION_SECRET = "local-preview-key-change-before-hosting"
+$env:COOKIE_SECURE = "false"
+uvicorn app.main:app --host 127.0.0.1 --port 8765
+```
+
+Open <http://127.0.0.1:8765>, create two accounts with different email addresses, create a group with one account, invite the second account, then test assignments, milestones, group chat, and private messages. Stop the server with Ctrl+C. The preview database and its signing-key file remain in `data/`.
 
 The first account created in a fresh database becomes the first user. For an existing database, the first registered account claims legacy unowned tasks, so register the existing owner before sharing the app address with classmates. New users only see their own assignments and projects to which they have been invited. Invitations are created in the app and returned as a link to share through the group’s usual channel; StudyPilot does not send email.
 
@@ -61,13 +73,15 @@ The workflow uses strict SSH host-key checking and deploys only after tests pass
 - `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`
 - `GET/POST /api/tasks`, `GET/PATCH/DELETE /api/tasks/{id}`
 - `GET/POST /api/projects`, `GET /api/projects/{id}`
-- `POST /api/projects/{id}/invites`, `POST /api/invitations/{token}/accept`
+- `POST /api/projects/{id}/invites`, `POST /api/invitations/{token}/accept`, `POST /api/invitations/accept`
+- `GET/POST /api/projects/{id}/milestones`, `PATCH /api/projects/{id}/milestones/{milestone_id}`
 - `GET/POST /api/projects/{id}/messages` (poll with `after_id`)
+- `GET /api/people`, `GET/POST /api/direct/conversations`, `GET/POST /api/direct/conversations/{id}/messages`
 - `GET/POST /api/tasks/{id}/comments`
 - `GET /api/activity`, `GET /api/notifications`, `POST /api/notifications/read`
 - `PATCH /api/profile`, `POST /api/profile/password`
 
-All account, assignment, project, chat, comment, activity, and notification APIs require a signed-in session. `GET /health` reports service readiness only. Password reset by email and outbound invitation email are not included in this MVP.
+All account, assignment, project, chat, comment, activity, and notification APIs require a signed-in session. Private conversations are limited to their two participants, and can only be started by classmates who share a group. `GET /health` reports service readiness only. Password reset by email, outbound invitation email, external calendar sync, and WebSocket push are not included in this MVP; chat refreshes by polling.
 
 ## Task 2 observability — postponed until October 30
 

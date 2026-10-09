@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime
 
 from fastapi.testclient import TestClient
 
@@ -100,6 +101,79 @@ def test_viewer_cannot_write_and_invitation_is_email_bound(tmp_path, monkeypatch
             assert reader.post("/api/tasks", json={"title": "Nope", "due_date": "2026-10-09", "project_id": project["id"]}).status_code == 403
 
 
+def test_group_workspace_tasks_status_transitions_and_chat_timestamps(tmp_path, monkeypatch):
+    with client_for(tmp_path / "planner.db", monkeypatch) as owner:
+        register(owner)
+        project = owner.post("/api/projects", json={"name": "Chemistry team"}).json()
+        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email": "jules@example.edu", "role": "editor"}).json()
+        with TestClient(app) as teammate:
+            register(teammate, "jules@example.edu", "Jules")
+            joined = teammate.post("/api/invitations/accept", json={"token": invite["token"]})
+            assert joined.status_code == 200
+            task = owner.post("/api/tasks", json={"title": "Finish data table", "due_date": "2026-10-15", "project_id": project["id"], "assignee_ids": [2]}).json()
+            assert len(owner.get(f"/api/tasks?project_id={project['id']}").json()) == 1
+            assert teammate.get(f"/api/tasks?project_id={project['id']}").json()[0]["id"] == task["id"]
+            for status in ("in_progress", "done", "todo"):
+                changed = teammate.patch(f"/api/tasks/{task['id']}", json={"status": status})
+                assert changed.status_code == 200 and changed.json()["status"] == status
+            group_message = teammate.post(f"/api/projects/{project['id']}/messages", json={"body": "The table is ready."}).json()
+            assert group_message["created_at"].endswith("Z")
+            assert datetime.fromisoformat(group_message["created_at"].replace("Z", "+00:00")).tzinfo is not None
+            assert owner.get(f"/api/projects/{project['id']}/messages").json()[0]["body"] == "The table is ready."
+            milestone = owner.post(f"/api/projects/{project['id']}/milestones", json={"title": "Submit draft", "due_date": "2026-10-20"})
+            assert milestone.status_code == 201
+            assert teammate.get(f"/api/projects/{project['id']}/milestones").json()[0]["title"] == "Submit draft"
+            assert teammate.patch(f"/api/projects/{project['id']}/milestones/{milestone.json()['id']}", json={"status": "done"}).status_code == 200
+        owned_group_tasks = owner.get(f"/api/tasks?project_id={project['id']}").json()
+        assert len(owned_group_tasks) == 1 and owned_group_tasks[0]["id"] == task["id"]
+
+
+def test_invitation_code_is_email_bound_and_one_time(tmp_path, monkeypatch):
+    with client_for(tmp_path / "planner.db", monkeypatch) as owner:
+        register(owner)
+        project = owner.post("/api/projects", json={"name": "Physics study group"}).json()
+        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email": "invited@example.edu"}).json()
+        with TestClient(app) as wrong_user:
+            register(wrong_user, "someone-else@example.edu", "Wrong user")
+            assert wrong_user.post("/api/invitations/accept", json={"token": invite["token"]}).status_code == 403
+            assert wrong_user.get(f"/api/projects/{project['id']}").status_code == 404
+        with TestClient(app) as invited_user:
+            register(invited_user, "invited@example.edu", "Invited user")
+            accepted = invited_user.post("/api/invitations/accept", json={"token": invite["token"]})
+            assert accepted.status_code == 200
+            assert invited_user.get(f"/api/projects/{project['id']}").status_code == 200
+            assert invited_user.post("/api/invitations/accept", json={"token": invite["token"]}).status_code == 404
+
+
+def test_direct_messages_are_private_to_shared_group_participants(tmp_path, monkeypatch):
+    with client_for(tmp_path / "planner.db", monkeypatch) as alice:
+        register(alice, "alice@example.edu", "Alice")
+        project = alice.post("/api/projects", json={"name": "Literature group"}).json()
+        invite = alice.post(f"/api/projects/{project['id']}/invites", json={"email": "ben@example.edu"}).json()
+        with TestClient(app) as ben:
+            register(ben, "ben@example.edu", "Ben")
+            ben.post(f"/api/invitations/{invite['token']}/accept")
+            contacts = ben.get("/api/people").json()
+            assert contacts == [{"id": 1, "name": "Alice"}]
+            conversation = ben.post("/api/direct/conversations", json={"recipient_id": 1})
+            assert conversation.status_code == 201
+            conversation_id = conversation.json()["id"]
+            sent = ben.post(f"/api/direct/conversations/{conversation_id}/messages", json={"body": "Can you review chapter two?"})
+            assert sent.status_code == 201
+            assert sent.json()["created_at"].endswith("Z")
+            assert alice.get("/api/direct/conversations").json()[0]["unread_count"] == 1
+            received = alice.get(f"/api/direct/conversations/{conversation_id}/messages")
+            assert received.status_code == 200 and received.json()[0]["body"] == "Can you review chapter two?"
+            assert alice.get("/api/direct/conversations").json()[0]["unread_count"] == 0
+            reply = alice.post(f"/api/direct/conversations/{conversation_id}/messages", json={"body": "Yes, I will."})
+            assert reply.status_code == 201
+        with TestClient(app) as stranger:
+            register(stranger, "stranger@example.edu", "Stranger")
+            assert stranger.get("/api/people").json() == []
+            assert stranger.get(f"/api/direct/conversations/{conversation_id}/messages").status_code == 404
+            assert stranger.post("/api/direct/conversations", json={"recipient_id": 1}).status_code == 404
+
+
 def test_additive_migration_preserves_legacy_rows(tmp_path, monkeypatch):
     path = tmp_path / "old.db"
     con = sqlite3.connect(path)
@@ -119,3 +193,6 @@ def test_homepage_is_served(tmp_path, monkeypatch):
     with client_for(tmp_path / "planner.db", monkeypatch) as client:
         response = client.get("/")
         assert response.status_code == 200 and "StudyPilot" in response.text
+        assert "Recent Activity" not in response.text
+        script = client.get("/static/app.js").text
+        assert "function timestamp(value)" in script and "[+-]\\d{2}:?\\d{2}" in script

@@ -52,6 +52,15 @@ def initialize() -> None:
             joined_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
             PRIMARY KEY(project_id,user_id)
         )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS milestones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 160),
+            due_date TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','done')),
+            created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )""")
         con.execute("""CREATE TABLE IF NOT EXISTS invitations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -75,6 +84,22 @@ def initialize() -> None:
             project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             body TEXT NOT NULL CHECK(length(body) BETWEEN 1 AND 2000),
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS direct_conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_a INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            user_b INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+            CHECK(user_a < user_b),
+            UNIQUE(user_a,user_b)
+        )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS direct_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL REFERENCES direct_conversations(id) ON DELETE CASCADE,
+            sender_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            body TEXT NOT NULL CHECK(length(body) BETWEEN 1 AND 2000),
+            read_at TEXT,
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
         )""")
         con.execute("""CREATE TABLE IF NOT EXISTS activity (
@@ -121,6 +146,8 @@ def initialize() -> None:
         con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner_id, due_date)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id, due_date)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_messages_project ON messages(project_id,id)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id,due_date)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_direct_messages_conversation ON direct_messages(conversation_id,id)")
 
 
 def row_to_task(row: sqlite3.Row) -> dict:

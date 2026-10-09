@@ -13,7 +13,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import db
-from app.schemas import (InviteCreate, Login, MessageCreate, PasswordUpdate, ProfileUpdate,
+from app.schemas import (DirectConversationCreate, InviteAccept, InviteCreate, Login, MessageCreate,
+                         MilestoneCreate, MilestoneUpdate, PasswordUpdate, ProfileUpdate,
                          ProjectCreate, Priority, Register, TaskCreate, TaskStatus, TaskUpdate)
 from app.telemetry import configure_telemetry, request_metrics
 
@@ -248,6 +249,45 @@ def get_project(project_id: int, user: User):
         return project
 
 
+@app.get("/api/projects/{project_id}/milestones")
+def list_milestones(project_id: int, user: User):
+    with db.connect() as con:
+        _membership(con, project_id, user["id"])
+        return [dict(row) for row in con.execute("SELECT * FROM milestones WHERE project_id=? ORDER BY due_date,id", (project_id,)).fetchall()]
+
+
+@app.post("/api/projects/{project_id}/milestones", status_code=201)
+def create_milestone(project_id: int, body: MilestoneCreate, user: User):
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="milestone title cannot be blank")
+    with db.connect() as con:
+        _can_edit(_membership(con, project_id, user["id"])["role"])
+        cursor = con.execute("INSERT INTO milestones(project_id,title,due_date,created_by) VALUES(?,?,?,?)", (project_id, title, body.due_date.isoformat(), user["id"]))
+        _log_activity(con, project_id, user["id"], "milestone_created", f"added milestone {title}")
+        return dict(con.execute("SELECT * FROM milestones WHERE id=?", (cursor.lastrowid,)).fetchone())
+
+
+@app.patch("/api/projects/{project_id}/milestones/{milestone_id}")
+def update_milestone(project_id: int, milestone_id: int, body: MilestoneUpdate, user: User):
+    changes = body.model_dump(exclude_unset=True)
+    if not changes or any(value is None for value in changes.values()):
+        raise HTTPException(status_code=400, detail="provide milestone fields to update")
+    with db.connect() as con:
+        _can_edit(_membership(con, project_id, user["id"])["role"])
+        row = con.execute("SELECT * FROM milestones WHERE id=? AND project_id=?", (milestone_id, project_id)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="milestone not found")
+        for key, value in changes.items():
+            changes[key] = value.isoformat() if isinstance(value, date) else value.strip() if key == "title" else value
+        if "title" in changes and not changes["title"]:
+            raise HTTPException(status_code=422, detail="milestone title cannot be blank")
+        fields = ",".join(f"{key}=?" for key in changes)
+        con.execute(f"UPDATE milestones SET {fields} WHERE id=? AND project_id=?", [*changes.values(), milestone_id, project_id])
+        _log_activity(con, project_id, user["id"], "milestone_updated", f"updated milestone {row['title']}")
+        return dict(con.execute("SELECT * FROM milestones WHERE id=?", (milestone_id,)).fetchone())
+
+
 @app.post("/api/projects/{project_id}/invites", status_code=201)
 def invite(project_id: int, body: InviteCreate, user: User):
     email = str(body.email).strip().lower()
@@ -265,8 +305,7 @@ def invite(project_id: int, body: InviteCreate, user: User):
         return {"email": email, "role": body.role, "token": token, "expires_at": expires}
 
 
-@app.post("/api/invitations/{token}/accept")
-def accept_invite(token: str, user: User):
+def _accept_invite(token: str, user: dict):
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     with db.connect() as con:
         row = con.execute("SELECT * FROM invitations WHERE token_hash=? AND accepted_at IS NULL", (token_hash,)).fetchone()
@@ -278,6 +317,17 @@ def accept_invite(token: str, user: User):
         con.execute("UPDATE invitations SET accepted_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?", (row["id"],))
         _log_activity(con, row["project_id"], user["id"], "member_joined", f"{user['name']} joined the project")
         return dict(con.execute("SELECT * FROM projects WHERE id=?", (row["project_id"],)).fetchone())
+
+
+@app.post("/api/invitations/{token}/accept")
+def accept_invite(token: str, user: User):
+    return _accept_invite(token, user)
+
+
+@app.post("/api/invitations/accept")
+def accept_invite_code(body: InviteAccept, user: User):
+    """Accept an owner-issued high-entropy invitation code; existing email binding still applies."""
+    return _accept_invite(body.token, user)
 
 
 @app.get("/api/tasks")
@@ -409,6 +459,76 @@ def send_message(project_id: int, body: MessageCreate, user: User):
         cur = con.execute("INSERT INTO messages(project_id,user_id,body) VALUES(?,?,?)", (project_id, user["id"], text))
         _log_activity(con, project_id, user["id"], "message_sent", "sent a project message")
         return dict(con.execute("SELECT m.id,m.project_id,m.body,m.created_at,u.id AS user_id,u.name FROM messages m JOIN users u ON u.id=m.user_id WHERE m.id=?", (cur.lastrowid,)).fetchone())
+
+
+def _direct_conversation(con: sqlite3.Connection, conversation_id: int, user_id: int) -> sqlite3.Row:
+    row = con.execute("SELECT * FROM direct_conversations WHERE id=? AND (user_a=? OR user_b=?)", (conversation_id, user_id, user_id)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return row
+
+
+@app.get("/api/people")
+def list_people(user: User):
+    """Return only classmates who share a project with the signed-in user."""
+    with db.connect() as con:
+        return [dict(row) for row in con.execute("""SELECT DISTINCT u.id,u.name
+            FROM users u JOIN project_members other ON other.user_id=u.id
+            JOIN project_members mine ON mine.project_id=other.project_id
+            WHERE mine.user_id=? AND u.id<>? ORDER BY u.name""", (user["id"], user["id"])).fetchall()]
+
+
+@app.get("/api/direct/conversations")
+def list_direct_conversations(user: User):
+    with db.connect() as con:
+        rows = con.execute("""SELECT c.id,c.created_at,
+            CASE WHEN c.user_a=? THEN b.id ELSE a.id END AS person_id,
+            CASE WHEN c.user_a=? THEN b.name ELSE a.name END AS person_name,
+            (SELECT body FROM direct_messages WHERE conversation_id=c.id ORDER BY id DESC LIMIT 1) AS last_message,
+            (SELECT created_at FROM direct_messages WHERE conversation_id=c.id ORDER BY id DESC LIMIT 1) AS last_message_at,
+            (SELECT COUNT(*) FROM direct_messages dm WHERE dm.conversation_id=c.id AND dm.sender_id<>? AND dm.read_at IS NULL) AS unread_count
+            FROM direct_conversations c JOIN users a ON a.id=c.user_a JOIN users b ON b.id=c.user_b
+            WHERE c.user_a=? OR c.user_b=? ORDER BY COALESCE(last_message_at,c.created_at) DESC""",
+            (user["id"], user["id"], user["id"], user["id"], user["id"])).fetchall()
+        return [dict(row) for row in rows]
+
+
+@app.post("/api/direct/conversations", status_code=201)
+def start_direct_conversation(body: DirectConversationCreate, user: User):
+    recipient_id = body.recipient_id
+    if recipient_id == user["id"]:
+        raise HTTPException(status_code=400, detail="choose another classmate")
+    lower, upper = sorted((user["id"], recipient_id))
+    with db.connect() as con:
+        if not con.execute("""SELECT 1 FROM project_members mine JOIN project_members other
+            ON mine.project_id=other.project_id WHERE mine.user_id=? AND other.user_id=?""", (user["id"], recipient_id)).fetchone():
+            raise HTTPException(status_code=404, detail="classmate not found")
+        con.execute("INSERT OR IGNORE INTO direct_conversations(user_a,user_b) VALUES(?,?)", (lower, upper))
+        row = con.execute("SELECT id,created_at FROM direct_conversations WHERE user_a=? AND user_b=?", (lower, upper)).fetchone()
+        return {**dict(row), "person_id": recipient_id}
+
+
+@app.get("/api/direct/conversations/{conversation_id}/messages")
+def list_direct_messages(conversation_id: int, user: User, after_id: int = Query(default=0, ge=0)):
+    with db.connect() as con:
+        _direct_conversation(con, conversation_id, user["id"])
+        con.execute("UPDATE direct_messages SET read_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE conversation_id=? AND sender_id<>? AND read_at IS NULL", (conversation_id, user["id"]))
+        rows = con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,u.name AS sender_name
+            FROM direct_messages dm JOIN users u ON u.id=dm.sender_id
+            WHERE dm.conversation_id=? AND dm.id>? ORDER BY dm.id LIMIT 100""", (conversation_id, after_id)).fetchall()
+        return [dict(row) for row in rows]
+
+
+@app.post("/api/direct/conversations/{conversation_id}/messages", status_code=201)
+def send_direct_message(conversation_id: int, body: MessageCreate, user: User):
+    text = body.body.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="message cannot be blank")
+    with db.connect() as con:
+        _direct_conversation(con, conversation_id, user["id"])
+        cursor = con.execute("INSERT INTO direct_messages(conversation_id,sender_id,body) VALUES(?,?,?)", (conversation_id, user["id"], text))
+        return dict(con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,u.name AS sender_name
+            FROM direct_messages dm JOIN users u ON u.id=dm.sender_id WHERE dm.id=?""", (cursor.lastrowid,)).fetchone())
 
 
 @app.get("/api/activity")

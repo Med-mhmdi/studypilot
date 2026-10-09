@@ -42,6 +42,25 @@ class MessageCreate(RequestModel):
     body: str = Field(min_length=1, max_length=2000)
 
 
+class InviteAccept(RequestModel):
+    token: str = Field(min_length=20, max_length=200)
+
+
+class DirectConversationCreate(RequestModel):
+    recipient_id: int = Field(gt=0)
+
+
+class MilestoneCreate(RequestModel):
+    title: str = Field(min_length=1, max_length=160)
+    due_date: date
+
+
+class MilestoneUpdate(RequestModel):
+    title: str | None = Field(default=None, min_length=1, max_length=160)
+    due_date: date | None = None
+    status: str | None = Field(default=None, pattern="^(open|done)$")
+
+
 class Priority(str, Enum):
     low = "low"
     medium = "medium"
