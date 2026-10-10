@@ -144,6 +144,8 @@ def initialize() -> None:
             body TEXT NOT NULL CHECK(length(body) BETWEEN 1 AND 2000),
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
         )""")
+        comment_columns = {row["name"] for row in con.execute("PRAGMA table_info(comments)")}
+        if "edited_at" not in comment_columns: con.execute("ALTER TABLE comments ADD COLUMN edited_at TEXT")
         con.execute("""CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

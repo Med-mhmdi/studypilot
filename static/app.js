@@ -19,7 +19,8 @@ let lastDirectMessageId = 0;
 let activeGroupChatId = null;
 let showFullArchive = false;
 let boardMetric = '';
-let activeStatus = 'todo';
+let activeStatus = 'all';
+let expandedPeopleList = '';
 
 function showMessage(message, type = 'error') {
   appMessage.textContent = message;
@@ -194,7 +195,7 @@ async function renderRoute() {
       if (route.id) { $('#projects-grid').hidden = true; $('.page-heading', $('#view-groups')).hidden = true; }
       else { $('#projects-grid').hidden = false; $('.page-heading', $('#view-groups')).hidden = false; $('#project-detail').hidden = true; }
       await loadProjects();
-      if (route.id) await renderProject(route.id);
+      if (route.id) { await renderProject(route.id); if(route.query.get('requests')==='1'&&['owner','admin'].includes(activeProject?.role)){await loadJoinRequests(route.id);$('#invite-dialog').showModal();} }
     }
     if (route.name === 'calendar') {
       await Promise.all([loadTasks(), loadProjects()]);
@@ -263,42 +264,22 @@ function filterTasks(items) {
 
 function updateDashboardBoard() {
   const filtered = filterTasks(tasks);
-  const done = filtered.filter((task) => task.status === 'done').sort((a,b) => (b.completed_at || b.updated_at || '').localeCompare(a.completed_at || a.updated_at || ''));
-  const overdue = filtered.filter(isOverdue);
-  const statusCounts = { todo: filtered.filter(task => task.status === 'todo').length, in_progress: filtered.filter(task => task.status === 'in_progress').length, done: done.length, overdue: overdue.length };
-  $('#count-todo').textContent = statusCounts.todo;
-  $('#count-doing').textContent = statusCounts.in_progress;
-  $('#count-done').textContent = statusCounts.done;
-  $('#count-overdue').textContent = statusCounts.overdue;
-  $$('.status-tab').forEach(tab => { const selected = tab.dataset.statusTab === activeStatus; tab.classList.toggle('active', selected); tab.setAttribute('aria-selected', String(selected)); });
-  const previews = $('#status-previews'); previews.replaceChildren();
-  for (const [key, label, count] of [['todo','To Do',statusCounts.todo],['in_progress','Doing',statusCounts.in_progress],['done','Done',statusCounts.done],['overdue','Overdue',statusCounts.overdue]]) {
-    if (key === activeStatus) continue;
-    const button = document.createElement('button'); button.className='status-preview'; button.type='button';
-    const name=document.createElement('span');name.textContent=label;const value=document.createElement('strong');value.textContent=count;
-    const hint=document.createElement('small');hint.textContent=`Open ${label.toLowerCase()} work`;
-    button.append(name,value,hint);button.addEventListener('click',()=>{activeStatus=key;boardMetric='';updateDashboardBoard();});previews.append(button);
-  }
-  const statusFiltered = activeStatus === 'overdue' ? overdue : filtered.filter(task => task.status === activeStatus);
-  const doneShown = statusFiltered.filter(task => task.status === 'done');
-  const shownDone = showFullArchive || $('#task-search').value.trim() ? doneShown : doneShown.slice(0, 15);
-  const displayed = activeStatus === 'done' ? shownDone : statusFiltered;
+  const displayed = activeStatus === 'all' ? filtered : activeStatus === 'overdue' ? filtered.filter(isOverdue) : filtered.filter(task => task.status === activeStatus);
   const hasMatches = displayed.length > 0;
-  renderBoard($('#task-board'), displayed, null, activeStatus);
-  $('#task-board').hidden = !hasMatches;
+  renderBoard($('#task-board'), displayed, null, activeStatus, filtered);
+  $('#board-focus-title').textContent = ({all:'All',todo:'To Do',in_progress:'Doing',done:'Done',overdue:'Overdue'})[activeStatus] || 'All';
+  $('#task-board').hidden = false;
   $('#task-empty').hidden = hasMatches;
   const searching = $('#task-search').value.trim() || $('#course-filter').value || $('#scope-filter').value !== 'all';
   $('#task-empty h3').textContent = tasks.length && (searching || boardMetric) ? 'No matching assignments' : 'No assignments here yet';
-  $('#task-empty p').textContent = tasks.length && (searching || boardMetric) ? 'Try another search or choose a different summary card.' : 'Add an assignment to get started.';
+  $('#task-empty p').textContent = tasks.length && (searching || boardMetric) ? 'Try another search or choose a different status.' : 'Add an assignment to get started.';
   $('#empty-add').textContent = tasks.length && (searching || boardMetric) ? 'Clear search and filters' : '＋ Add assignment';
-  const note = $('#archive-note');
-  if (note) { note.hidden = activeStatus !== 'done' || !doneShown.length; note.textContent = `${shownDone.length} of ${doneShown.length} completed assignments shown. `; const toggle = document.createElement('button'); toggle.className='text-button'; toggle.textContent = showFullArchive ? 'Show recent only' : 'Show full history'; toggle.addEventListener('click', () => { showFullArchive = !showFullArchive; updateDashboardBoard(); }); note.append(toggle); }
+  const note = $('#archive-note'); if (note) note.hidden = true;
 }
 
 $('#task-search').addEventListener('input', updateDashboardBoard);
 $('#course-filter').addEventListener('change', updateDashboardBoard);
 $('#scope-filter').addEventListener('change', updateDashboardBoard);
-$$('.status-tab').forEach(tab => tab.addEventListener('click', () => { activeStatus=tab.dataset.statusTab; boardMetric=''; updateDashboardBoard(); }));
 $('#new-task').addEventListener('click', () => openNewTask(null));
 $('#board-new-task').addEventListener('click', () => openNewTask(null));
 $$('.metric-card').forEach((card) => card.addEventListener('click', () => { const filter=card.dataset.metric === 'in_progress' ? 'doing' : card.dataset.metric; location.hash = `#/board?filter=${filter}`; }));
@@ -309,7 +290,7 @@ function renderBoardView() {
   filter.replaceChildren(new Option('All courses', ''), ...courses.map((course) => new Option(course, course)));
   filter.value = courses.includes(chosen) ? chosen : '';
   const routeFilter = new URLSearchParams(location.hash.split('?')[1] || '').get('filter') || '';
-  activeStatus = ({'doing':'in_progress','in_progress':'in_progress','done':'done','overdue':'overdue','up-next':'todo','todo':'todo'})[routeFilter] || activeStatus || 'todo';
+  activeStatus = ({'doing':'in_progress','in_progress':'in_progress','done':'done','overdue':'overdue','up-next':'todo','todo':'todo','all':'all'})[routeFilter] || 'all';
   updateDashboardBoard();
 }
 $('#empty-add').addEventListener('click', () => {
@@ -318,36 +299,52 @@ $('#empty-add').addEventListener('click', () => {
   } else openNewTask(null);
 });
 
-const statusNames = { todo: 'To do', in_progress: 'In progress', done: 'Done' };
-function renderBoard(board, items, project, onlyStatus = null) {
+const statusNames = { todo: 'To Do', in_progress: 'Doing', done: 'Done', overdue: 'Overdue' };
+function renderBoard(board, items, project, onlyStatus = 'all', countItems = items) {
   board.replaceChildren();
-  board.className = 'task-board';
-  const statuses = Object.entries(statusNames).filter(([status]) => !onlyStatus || (onlyStatus === 'overdue' ? items.some(task => task.status === status) : status === onlyStatus));
-  for (const [status, title] of statuses) {
+  board.className = 'task-board board-layout';
+  const isMainBoard = board.id === 'task-board';
+  const focused = onlyStatus || 'all';
+  const counts = {todo:countItems.filter(task=>task.status==='todo').length,in_progress:countItems.filter(task=>task.status==='in_progress').length,done:countItems.filter(task=>task.status==='done').length,overdue:countItems.filter(isOverdue).length};
+  const rail = document.createElement('nav'); rail.className='board-status-rail'; rail.setAttribute('aria-label','Assignment status');
+  for (const [key,label] of [['all','All'],['todo','To Do'],['in_progress','Doing'],['done','Done'],['overdue','Overdue']]) {
+    const button=document.createElement('button');button.type='button';button.className=`board-status-target ${key===focused?'active':''}`;button.dataset.status=key;button.setAttribute('aria-pressed',String(key===focused));
+    const name=document.createElement('span');name.textContent=label;const count=document.createElement('strong');count.textContent=key==='all'?countItems.length:counts[key];button.append(name,count);
+    button.addEventListener('click',()=>{if(isMainBoard){activeStatus=key;boardMetric='';updateDashboardBoard();}else{board.dataset.focusStatus=key;renderBoard(board,items,project,key,countItems);}});
+    button.addEventListener('dragover',event=>{if(key!=='all'&&key!=='overdue'&&project?.role!=='viewer'&&!project?.legacy_readonly){event.preventDefault();button.classList.add('drop-target');}});
+    button.addEventListener('dragleave',()=>button.classList.remove('drop-target'));
+    button.addEventListener('drop',async event=>{event.preventDefault();button.classList.remove('drop-target');if(key==='all'||key==='overdue')return;const id=Number(event.dataTransfer.getData('text/plain'));const task=items.find(item=>item.id===id);if(task&&task.status!==key)await changeTaskStatus(task,key,project);});
+    rail.append(button);
+  }
+  board.append(rail);
+  const lanes = document.createElement('div');lanes.className='board-lanes';
+  const statuses = focused==='all' ? ['todo','in_progress','done','overdue'] : [focused];
+  for (const status of statuses) {
     const lane = document.createElement('section');
     lane.className = `kanban-lane lane-${status}`;
     lane.dataset.status = status;
     const heading = document.createElement('div');
     heading.className = 'lane-heading';
-    const label = document.createElement('h3'); label.textContent = title;
+    const label = document.createElement('h3'); label.textContent = statusNames[status];
     const count = document.createElement('span'); count.className = 'lane-count';
-    const cards = items.filter((task) => task.status === status);
+    const cards = status==='overdue' ? items.filter(isOverdue) : items.filter(task => task.status === status && (focused!=='all' || !isOverdue(task)));
     count.textContent = cards.length;
     heading.append(label, count);
     const content = document.createElement('div'); content.className = 'lane-cards';
-    if (!cards.length) { const empty = document.createElement('p'); empty.className = 'lane-empty'; empty.textContent = 'Drop work here'; content.append(empty); }
+    if (!cards.length) { const empty = document.createElement('p'); empty.className = 'lane-empty'; empty.textContent = status==='overdue'?'No overdue assignments':'Drop work here'; content.append(empty); }
     cards.forEach((task) => content.append(makeTaskCard(task, project)));
     lane.append(heading, content);
-    lane.addEventListener('dragover', (event) => { if ((!project || !['viewer'].includes(project.role)) && onlyStatus !== 'overdue') { event.preventDefault(); lane.classList.add('drop-target'); } });
+    lane.addEventListener('dragover', (event) => { if ((!project || !['viewer'].includes(project.role)) && !project?.legacy_readonly && status!=='overdue') { event.preventDefault(); lane.classList.add('drop-target'); } });
     lane.addEventListener('dragleave', () => lane.classList.remove('drop-target'));
     lane.addEventListener('drop', async (event) => {
       event.preventDefault(); lane.classList.remove('drop-target');
       const id = Number(event.dataTransfer.getData('text/plain'));
       const task = items.find((item) => item.id === id);
-      if (task && task.status !== status) await changeTaskStatus(task, status, project);
+      if (task && status!=='overdue' && task.status !== status) await changeTaskStatus(task, status, project);
     });
-    board.append(lane);
+    lanes.append(lane);
   }
+  board.append(lanes);
 }
 
 function makeTaskCard(task, project) {
@@ -359,6 +356,7 @@ function makeTaskCard(task, project) {
   if (canEdit) card.setAttribute('aria-keyshortcuts','ArrowLeft ArrowRight');
   card.addEventListener('keydown', (event) => { if (!canEdit || !['ArrowLeft','ArrowRight'].includes(event.key)) return; event.preventDefault(); const order=['todo','in_progress','done'];const pos=order.indexOf(task.status);const next=order[Math.max(0,Math.min(order.length-1,pos+(event.key==='ArrowRight'?1:-1)))];if(next!==task.status)changeTaskStatus(task,next,project); });
   card.addEventListener('dragstart', (event) => { event.dataTransfer.setData('text/plain', String(task.id)); event.dataTransfer.effectAllowed = 'move'; });
+  card.addEventListener('click',event=>{if(canEdit&&!event.target.closest('button,details,input,textarea,select,a'))openEditTask(task,project);});
   const titleLine = document.createElement('div'); titleLine.className = 'task-card-title';
   const title = document.createElement('button'); title.className = 'task-title'; title.textContent = task.title; title.disabled = !canEdit; title.addEventListener('click', () => openEditTask(task, project));
   const topActions=document.createElement('div');topActions.className='task-top-actions';
@@ -371,6 +369,7 @@ function makeTaskCard(task, project) {
   if (task.priority) context.append(makeTag(`${task.priority} priority`, `priority-tag ${task.priority}`));
   const deadline = document.createElement('p'); deadline.className = `task-deadline ${isOverdue(task) ? 'overdue' : ''}`;
   deadline.textContent = `${isOverdue(task) ? 'Overdue · ' : 'Due · '}${formatDate(task.due_date, { month: 'short', day: 'numeric', year: 'numeric' })}`;
+  if(isOverdue(task)){const actual=document.createElement('small');actual.className='underlying-status';actual.textContent=statusNames[task.status];deadline.append(' · ',actual);}
   const assignees = document.createElement('p'); assignees.className = 'task-assignees';
   assignees.textContent = task.assignees?.length ? task.assignees.map((person) => person.name).join(', ') : (project ? 'No teammates assigned' : 'Just you');
   if (task.started_at) {
@@ -380,7 +379,7 @@ function makeTaskCard(task, project) {
   const actions = document.createElement('div'); actions.className = 'task-card-actions';
   const moveMenu=document.createElement('details');moveMenu.className='task-move-menu';moveMenu.hidden=!canEdit;
   const summary=document.createElement('summary');summary.textContent='Move';summary.setAttribute('aria-label',`Move ${task.title}`);moveMenu.append(summary);
-  Object.entries(statusNames).forEach(([value,name])=>{if(value===task.status)return;const option=document.createElement('button');option.type='button';option.textContent=`Move to ${name}`;option.addEventListener('click',()=>{moveMenu.open=false;changeTaskStatus(task,value,project);});moveMenu.append(option);});
+  Object.entries(statusNames).filter(([value])=>value!=='overdue').forEach(([value,name])=>{if(value===task.status)return;const option=document.createElement('button');option.type='button';option.textContent=`Move to ${name}`;option.addEventListener('click',()=>{moveMenu.open=false;changeTaskStatus(task,value,project);});moveMenu.append(option);});
   const comment = document.createElement('button'); comment.className = 'text-button'; comment.textContent = 'Comments'; comment.addEventListener('click', () => toggleComments(card, task, project));
   const historyButton=document.createElement('button');historyButton.className='text-button';historyButton.textContent='History';historyButton.addEventListener('click',()=>toggleTaskHistory(card,task));
   actions.append(moveMenu, comment, historyButton);
@@ -499,26 +498,27 @@ $('#delete-task').addEventListener('click', async () => {
 });
 
 async function toggleComments(card, task, project) {
-  const old = $('.comments-panel', card);
-  if (old) { old.remove(); return; }
-  const panel = document.createElement('section'); panel.className = 'comments-panel'; panel.setAttribute('aria-label', `Comments on ${task.title}`);
-  panel.textContent = 'Loading comments…'; card.append(panel);
+  let dialog=$('#task-comments-dialog');
+  if(!dialog){dialog=document.createElement('dialog');dialog.id='task-comments-dialog';const panel=document.createElement('section');panel.className='comments-panel';panel.setAttribute('aria-label','Assignment comments');dialog.append(panel);document.body.append(dialog);}
+  if(dialog.open&&Number(dialog.dataset.taskId)===Number(task.id)){dialog.close();return;}
+  dialog.dataset.taskId=String(task.id);const panel=$('.comments-panel',dialog);panel.textContent='Loading comments…';dialog.showModal();
   try {
-    const comments = await api(`/api/tasks/${task.id}/comments`);
-    panel.replaceChildren();
-    const title = document.createElement('h4'); title.textContent = 'Assignment comments'; panel.append(title);
-    const stream = document.createElement('div'); stream.className = 'comment-stream';
-    if (!comments.length) stream.textContent = 'No comments yet.';
-    comments.forEach((comment) => { const row = document.createElement('p'); row.className = 'comment-item'; const by = document.createElement('strong'); by.textContent = comment.name; const body = document.createElement('span'); body.textContent = comment.body; row.append(by, body); stream.append(row); });
-    panel.append(stream);
-    if (project?.role !== 'viewer') {
-      const form = document.createElement('form'); form.className = 'comment-form';
-      const input = document.createElement('input'); input.name = 'body'; input.maxLength = 2000; input.required = true; input.placeholder = 'Add a helpful note'; input.setAttribute('aria-label', 'Comment');
-      const send = document.createElement('button'); send.className = 'secondary-button'; send.textContent = 'Send'; form.append(input, send);
-      form.addEventListener('submit', async (event) => { event.preventDefault(); try { await post(`/api/tasks/${task.id}/comments`, { body: input.value }); panel.remove(); await toggleComments(card, task, project); } catch (error) { showMessage(error.message); } });
-      panel.append(form);
-    }
+    await renderCommentPanel(panel, task, project);
   } catch (error) { panel.textContent = error.message; }
+}
+
+async function renderCommentPanel(panel, task, project) {
+  const comments=await api(`/api/tasks/${task.id}/comments`);panel.replaceChildren();
+  const head=document.createElement('div');head.className='comments-dialog-head';const title=document.createElement('h2');title.textContent=task.title;const close=document.createElement('button');close.type='button';close.className='icon-button';close.textContent='×';close.setAttribute('aria-label','Close comments');close.addEventListener('click',()=>panel.closest('dialog').close());head.append(title,close);panel.append(head);
+  const stream=document.createElement('div');stream.className='comment-stream';
+  if(!comments.length){const empty=document.createElement('p');empty.className='comment-empty';empty.textContent='No comments yet.';stream.append(empty);}
+  comments.forEach(comment=>{
+    const row=document.createElement('article');row.className='comment-item';const copy=document.createElement('div');copy.className='comment-copy';const meta=document.createElement('div');meta.className='comment-meta';const by=document.createElement('strong');by.textContent=comment.name;const when=document.createElement('small');when.textContent=`${formatTimestamp(comment.created_at)}${comment.edited_at?' · edited':''}`;meta.append(by,when);const body=document.createElement('p');body.textContent=comment.body;copy.append(meta,body);row.append(copy);
+    if(Number(comment.user_id)===Number(user?.id)&&project?.role!=='viewer'&&!project?.legacy_readonly){const actions=document.createElement('details');actions.className='comment-menu';const trigger=document.createElement('summary');trigger.textContent='···';trigger.setAttribute('aria-label','Comment actions');const menu=document.createElement('div');menu.className='comment-menu-items';const edit=document.createElement('button');edit.type='button';edit.textContent='Edit';edit.addEventListener('click',async()=>{actions.open=false;const input=document.createElement('textarea');input.className='comment-edit-input';input.value=comment.body;input.maxLength=2000;const save=document.createElement('button');save.type='button';save.className='secondary-button';save.textContent='Save';const cancel=document.createElement('button');cancel.type='button';cancel.className='text-button';cancel.textContent='Cancel';copy.replaceChildren(meta,input);row.append(save,cancel);cancel.addEventListener('click',()=>renderCommentPanel(panel,task,project).catch(error=>showMessage(error.message)));save.addEventListener('click',async()=>{try{await patch(`/api/tasks/${task.id}/comments/${comment.id}`,{body:input.value});await renderCommentPanel(panel,task,project);}catch(error){showMessage(error.message);}});});const remove=document.createElement('button');remove.type='button';remove.textContent='Delete';remove.addEventListener('click',async()=>{actions.open=false;if(!confirm('Delete this comment?'))return;try{await api(`/api/tasks/${task.id}/comments/${comment.id}`,{method:'DELETE'});await renderCommentPanel(panel,task,project);}catch(error){showMessage(error.message);}});menu.append(edit,remove);actions.append(trigger,menu);row.append(actions);}
+    stream.append(row);
+  });
+  panel.append(stream);
+  if(project?.role!=='viewer'&&!project?.legacy_readonly){const form=document.createElement('form');form.className='comment-form';const input=document.createElement('textarea');input.name='body';input.maxLength=2000;input.required=true;input.placeholder='Write a comment…';input.setAttribute('aria-label','Comment');const controls=document.createElement('div');controls.className='comment-form-controls';const send=document.createElement('button');send.className='primary-button';send.textContent='Send';controls.append(send);form.append(input,controls);form.addEventListener('submit',async event=>{event.preventDefault();send.disabled=true;try{await post(`/api/tasks/${task.id}/comments`,{body:input.value});await renderCommentPanel(panel,task,project);}catch(error){send.disabled=false;showMessage(error.message);}});panel.append(form);}
 }
 
 function renderProjects() {
@@ -526,15 +526,14 @@ function renderProjects() {
   if (!projects.length) {
     const empty = document.createElement('div'); empty.className = 'group-empty';
     const icon = document.createElement('span'); icon.className = 'empty-check'; icon.textContent = '✦';
-    const heading = document.createElement('h2'); heading.textContent = 'Your groups will live here';
-    const text = document.createElement('p'); text.textContent = 'Start one group or join a classmate’s invitation to share deadlines and assignments.';
-    empty.append(icon, heading, text); grid.append(empty); return;
+    const heading = document.createElement('h2'); heading.textContent = 'No study groups yet';
+    empty.append(icon, heading); grid.append(empty); return;
   }
   projects.forEach((project) => {
     const card = document.createElement('button'); card.className = 'project-card';
     const icon = document.createElement('span'); icon.className = 'project-icon'; icon.textContent = project.name.trim().slice(0, 1).toUpperCase();
     const title = document.createElement('strong'); title.textContent = project.name;
-    const description = document.createElement('p'); description.textContent = project.description || 'A shared space for your next big idea.';
+    const description = document.createElement('p'); description.textContent = project.description || '';
     const foot = document.createElement('span'); foot.className = 'project-foot'; foot.textContent = `${project.member_count} members · ${project.task_count} assignments`;
     card.append(icon, title, description, foot); card.addEventListener('click', () => { location.hash = `#/groups/${project.id}`; }); grid.append(card);
   });
@@ -543,7 +542,7 @@ function renderProjects() {
 $('#new-project').addEventListener('click', () => { $('#project-form').reset(); $('#project-form').dataset.id=''; $('#project-dialog-title').textContent='Start a study group'; $('#save-group').textContent='Create group'; $('#delete-group').hidden=true; $('#project-error').textContent = ''; $('#project-dialog').showModal(); });
 $('#project-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  try { const id=event.currentTarget.dataset.id;const payload=Object.fromEntries(new FormData(event.currentTarget));const project=id?await patch(`/api/projects/${id}`,payload):await post('/api/projects',payload); $('#project-dialog').close(); await loadProjects(); location.hash = `#/groups/${project.id}`; }
+  try { const id=event.currentTarget.dataset.id;const payload=Object.fromEntries(new FormData(event.currentTarget));const project=id?await patch(`/api/projects/${id}`,payload):await post('/api/projects',payload); $('#project-dialog').close(); await loadProjects(); if(id&&routeFromHash().name==='groups'&&Number(routeFromHash().id)===Number(project.id)){await renderProject(project.id);if(activeGroupChatId===project.id){const header=$('.thread-header h2');if(header)header.textContent=project.name;await loadConversations();renderConversations();}}else location.hash = `#/groups/${project.id}`; }
   catch (error) { $('#project-error').textContent = error.message; }
 });
 $('#delete-group').addEventListener('click',async()=>{if(!activeProject||!confirm(`Delete “${activeProject.name}” and all its shared assignments, messages, and history? This cannot be undone.`))return;try{await api(`/api/projects/${activeProject.id}`,{method:'DELETE'});$('#project-dialog').close();location.hash='#/groups';await loadProjects();}catch(error){$('#project-error').textContent=error.message;}});
@@ -573,7 +572,7 @@ async function renderProject(projectId) {
   const head = document.createElement('div'); head.className = 'project-detail-head';
   const back = document.createElement('a'); back.className = 'text-button back-link'; back.href = '#/groups'; back.textContent = '← All study groups';
   const top = document.createElement('div'); top.className = 'project-heading-row';
-  const titlebox = document.createElement('div'); const title = document.createElement('h2'); title.textContent = activeProject.name; const description = document.createElement('p'); description.textContent = activeProject.description || 'A shared space for your next big idea.'; titlebox.append(title, description);
+  const titlebox = document.createElement('div'); const title = document.createElement('h2'); title.textContent = activeProject.name; const description = document.createElement('p'); description.textContent = activeProject.description || ''; titlebox.append(title, description);
   const actions = document.createElement('div'); actions.className = 'page-actions';
   const addTask = document.createElement('button'); addTask.className = 'primary-button'; addTask.textContent = '＋ Assignment'; addTask.hidden = activeProject.role === 'viewer'; addTask.addEventListener('click', () => openNewTask(activeProject));
   const editGroup=document.createElement('button');editGroup.className='secondary-button';editGroup.textContent='Edit group';editGroup.hidden=!['owner','admin'].includes(activeProject.role);editGroup.addEventListener('click',()=>{const form=$('#project-form');form.reset();form.dataset.id=String(activeProject.id);form.elements.name.value=activeProject.name;form.elements.description.value=activeProject.description||'';$('#project-dialog-title').textContent='Edit group';$('#save-group').textContent='Save changes';$('#delete-group').hidden=activeProject.role!=='owner';$('#project-error').textContent='';$('#project-dialog').showModal();});
@@ -583,7 +582,7 @@ async function renderProject(projectId) {
   const layout = document.createElement('div'); layout.className = 'group-workspace-grid';
   const plan = document.createElement('section'); plan.className = 'group-plan';
   const taskHeading = document.createElement('div'); taskHeading.className = 'subsection-heading'; const taskTitle = document.createElement('h3'); taskTitle.textContent = 'Shared assignments'; taskHeading.append(taskTitle); plan.append(taskHeading);
-  const groupBoard = document.createElement('div'); groupBoard.id = 'group-task-board'; plan.append(groupBoard);
+  const groupBoard = document.createElement('div'); groupBoard.id = 'group-task-board';groupBoard.dataset.focusStatus='all'; plan.append(groupBoard);
   const sidebar = document.createElement('aside'); sidebar.className = 'group-sidebar';
   const memberPanel = document.createElement('section'); memberPanel.className = 'group-panel'; const memberTitle = document.createElement('h3'); memberTitle.textContent = `Your team · ${activeProject.members.length}`; memberPanel.append(memberTitle);
   activeProject.members.forEach((member) => { const row = document.createElement('div'); row.className = 'member-row'; const avatar = document.createElement('span'); avatar.className = 'avatar small-avatar'; setAvatar(avatar,member); const name = document.createElement('span'); name.className = 'member-name'; name.textContent = member.name + (member.id === user.id ? ' · You' : ''); const role = document.createElement('small'); role.textContent = member.legacy_readonly ? 'Student · read only' : member.role; row.append(avatar, name, role); if (member.id !== user.id) { const dm = document.createElement('button'); dm.className = 'text-button'; dm.textContent = 'Message'; dm.setAttribute('aria-label', `Message ${member.name}`); dm.addEventListener('click', () => openDirectConversation(member.id)); row.append(dm);if(activeProject.role==='owner'&&member.role!=='owner'){const change=document.createElement('button');change.className='text-button';change.textContent=member.role==='admin'?'Make student':'Make admin';change.addEventListener('click',async()=>{try{await patch(`/api/projects/${activeProject.id}/members/${member.id}`,{role:member.role==='admin'?'student':'admin'});await renderProject(activeProject.id);}catch(error){showMessage(error.message);}});const remove=document.createElement('button');remove.className='text-button';remove.textContent='Remove';remove.addEventListener('click',async()=>{if(!confirm(`Remove ${member.name} from this group?`))return;try{await api(`/api/projects/${activeProject.id}/members/${member.id}`,{method:'DELETE'});await renderProject(activeProject.id);}catch(error){showMessage(error.message);}});row.append(change,remove);const transfer=document.createElement('button');transfer.className='text-button';transfer.textContent='Make owner';transfer.addEventListener('click',async()=>{if(!confirm(`Transfer ownership to ${member.name}? You will become an admin.`))return;try{await post(`/api/projects/${activeProject.id}/transfer-owner`,{user_id:member.id});await renderProject(activeProject.id);}catch(error){showMessage(error.message);}});row.append(transfer);}} memberPanel.append(row); });
@@ -597,7 +596,7 @@ async function loadProjectBoard(project) {
   if (!project) return;
   const items = await loadTasks(project.id);
   const board = $('#group-task-board');
-  if (board) renderBoard(board, items, project);
+  if (board) renderBoard(board, items, project, board.dataset.focusStatus||'all', items);
 }
 
 async function loadMilestones(projectId) {
@@ -754,35 +753,37 @@ async function renderPeople() {
   const outgoing = requests.filter((r) => r.direction === 'outgoing' && r.status === 'pending');
   const friends = requests.filter((r) => r.status === 'accepted');
   const blocked = requests.filter((r) => r.status === 'blocked');
-  const paint = (selector, items, kind) => {
-    const box = $(selector); box.replaceChildren();
-    if (!items.length) { const empty=document.createElement('p');empty.className='subtle-empty';empty.textContent=kind==='incoming'?'No incoming requests.':kind==='outgoing'?'No pending requests.':kind==='friends'?'Friends you add will appear here.':kind==='blocked'?'No blocked classmates.':'Search by their unique username.';box.append(empty);return; }
-    items.forEach((item) => { const row=document.createElement('article');row.className='person-card';const avatar=document.createElement('span');avatar.className='avatar';setAvatar(avatar,{...item,id:item.direction==='incoming'?item.requester_id:item.recipient_id});const info=document.createElement('span');info.className='person-copy';const name=document.createElement('strong');name.textContent=item.name;const handle=document.createElement('small');handle.textContent=`@${item.username}`;info.append(name,handle);row.append(avatar,info);
-      const action=(label,fn,cls='secondary-button')=>{const button=document.createElement('button');button.className=cls;button.textContent=label;button.addEventListener('click',fn);row.append(button);};
-      if(kind==='incoming'){action('Accept',async()=>{await post(`/api/friend-requests/${item.id}/accept`,{});await renderPeople();});action('Decline',async()=>{await post(`/api/friend-requests/${item.id}/decline`,{});await renderPeople();});action('Block',async()=>{if(confirm(`Block @${item.username}?`)){await post(`/api/friend-requests/${item.id}/block`,{});await renderPeople();}},'text-button');}
-      if(kind==='outgoing')action('Cancel',async()=>{await api(`/api/friend-requests/${item.id}`,{method:'DELETE'});await renderPeople();});
-      if(kind==='friends')action('Message',()=>openDirectConversation(item.direction==='outgoing'?item.recipient_id:item.requester_id),'primary-button');
-      if(kind==='blocked'){const state=document.createElement('small');state.className='relationship-state';state.textContent='Blocked';row.append(state);}
-      box.append(row);
-    });
-  };
-  paint('#incoming-requests',incoming,'incoming');paint('#outgoing-requests',outgoing,'outgoing');paint('#friends-list',friends,'friends');paint('#blocked-list',blocked,'blocked');
-  for(const [selector,label,items] of [['#incoming-requests','Incoming requests',incoming],['#outgoing-requests','Outgoing requests',outgoing],['#friends-list','Friends',friends],['#blocked-list','Blocked',blocked]]){
-    const list=$(selector),panel=list.closest('.workspace');let summary=$('.people-summary',panel);
-    const heading=$('h2',panel);if(heading)heading.hidden=true;
-    if(!summary){summary=document.createElement('button');summary.type='button';summary.className='people-summary';panel.insertBefore(summary,list);summary.addEventListener('click',()=>{list.hidden=!list.hidden;summary.setAttribute('aria-expanded',String(!list.hidden));});}
-    summary.replaceChildren();const title=document.createElement('span');title.textContent=label;const count=document.createElement('strong');count.textContent=items.length;const hint=document.createElement('small');hint.textContent='View and manage';summary.append(title,count,hint);summary.setAttribute('aria-expanded','false');list.hidden=true;
-  }
+  const groups=[['incoming','Incoming',incoming],['outgoing','Outgoing',outgoing],['friends','Friends',friends],['blocked','Blocked',blocked]];
+  const tabs=$('#people-tabs');tabs.replaceChildren();
+  groups.forEach(([kind,label,items])=>{const button=document.createElement('button');button.type='button';button.className=`people-tab ${expandedPeopleList===kind?'active':''}`;button.setAttribute('aria-expanded',String(expandedPeopleList===kind));const text=document.createElement('span');text.textContent=label;const count=document.createElement('strong');count.textContent=items.length;button.append(text,count);button.addEventListener('click',()=>{expandedPeopleList=expandedPeopleList===kind?'':kind;renderPeople();});tabs.append(button);});
+  const panel=$('#people-panel');const list=$('#people-panel-list');const current=groups.find(([kind])=>kind===expandedPeopleList);panel.hidden=!current;list.replaceChildren();
+  if(!current)return;
+  const [kind,label,items]=current;$('#people-panel-title').textContent=label;
+  if(!items.length){const empty=document.createElement('p');empty.className='subtle-empty';empty.textContent=kind==='incoming'?'No incoming requests.':kind==='outgoing'?'No pending requests.':kind==='friends'?'No classmates added yet.':'No blocked classmates.';list.append(empty);return;}
+  items.forEach(item=>{const row=document.createElement('article');row.className='person-card';const avatar=document.createElement('span');avatar.className='avatar';setAvatar(avatar,{...item,id:item.direction==='incoming'?item.requester_id:item.recipient_id});const info=document.createElement('span');info.className='person-copy';const name=document.createElement('strong');name.textContent=item.name;const handle=document.createElement('small');handle.textContent=`@${item.username}`;info.append(name,handle);row.append(avatar,info);
+    const action=(label,fn,cls='secondary-button')=>{const button=document.createElement('button');button.className=cls;button.textContent=label;button.addEventListener('click',async()=>{button.disabled=true;try{await fn();}catch(error){button.disabled=false;showMessage(error.message);}});row.append(button);};
+    if(kind==='incoming'){action('Accept',async()=>{await post(`/api/friend-requests/${item.id}/accept`,{});await renderPeople();});action('Decline',async()=>{await post(`/api/friend-requests/${item.id}/decline`,{});await renderPeople();});action('Block',async()=>{if(confirm(`Block @${item.username}?`)){await post(`/api/friend-requests/${item.id}/block`,{});await renderPeople();}},'text-button');}
+    if(kind==='outgoing')action('Cancel request',async()=>{await api(`/api/friend-requests/${item.id}`,{method:'DELETE'});showMessage(`Request to @${item.username} cancelled.`,'success');await renderPeople();});
+    if(kind==='friends')action('Message',()=>openDirectConversation(item.direction==='outgoing'?item.recipient_id:item.requester_id),'primary-button');
+    if(kind==='blocked'){const state=document.createElement('small');state.className='relationship-state';state.textContent='Blocked';row.append(state);}
+    list.append(row);
+  });
 }
 
-$('#friend-search-form').addEventListener('submit', async (event) => {
-  event.preventDefault(); const username=new FormData(event.currentTarget).get('username').trim().replace(/^@/,'');const note=$('#friend-search-note');const results=$('#people-results');note.textContent='';results.replaceChildren();
-  if(username.length<3){note.textContent='Enter at least 3 characters.';return;}
-  try { const matches=await api(`/api/people/search?q=${encodeURIComponent(username)}`);const exact=matches.filter((p)=>p.username.toLowerCase()===username.toLowerCase());
-    if(!exact.length){note.textContent='No classmate found. Check the username and try again.';return;}
-    const person=exact[0];const row=document.createElement('article');row.className='person-card';const avatar=document.createElement('span');avatar.className='avatar';setAvatar(avatar,person);const info=document.createElement('span');info.className='person-copy';const name=document.createElement('strong');name.textContent=person.name;const handle=document.createElement('small');handle.textContent=`@${person.username} · ${person.relationship.replace('_',' ')}`;info.append(name,handle);row.append(avatar,info);const send=document.createElement('button');send.className='primary-button';send.textContent=['friends','group_classmate'].includes(person.relationship)?'Message':person.relationship==='request_sent'?'Request sent':person.relationship==='incoming_request'?'Accept request':'Add classmate';send.disabled=person.relationship==='request_sent';send.addEventListener('click',async()=>{try{let result;if(['friends','group_classmate'].includes(person.relationship)){await openDirectConversation(person.id);return;}if(person.relationship==='incoming_request'){const incoming=(await api('/api/friend-requests')).find(r=>r.direction==='incoming'&&r.status==='pending'&&r.username.toLowerCase()===person.username.toLowerCase());if(incoming)result=await post(`/api/friend-requests/${incoming.id}/accept`,{});}else result=await post('/api/friend-requests',{username:person.username});send.textContent=result?.status==='pending'?'Request sent':'Connected';send.disabled=true;await Promise.all([loadNotifications(),renderPeople()]);}catch(error){note.textContent=error.message;}});row.append(send);results.append(row);
-  } catch(error){note.textContent=error.message;}
-});
+async function renderPeopleSearch(username, feedback='') {
+  const note=$('#friend-search-note'),results=$('#people-results');note.textContent=feedback;note.classList.toggle('success-note',Boolean(feedback));results.replaceChildren();if(username.length<3)return;
+  try{const matches=await api(`/api/people/search?q=${encodeURIComponent(username)}`);const person=matches.find(p=>p.username.toLowerCase()===username.toLowerCase());if(!person){if(!feedback)note.textContent='No classmate found. Check the username and try again.';return;}
+    const row=document.createElement('article');row.className='person-card';const avatar=document.createElement('span');avatar.className='avatar';setAvatar(avatar,person);const info=document.createElement('span');info.className='person-copy';const name=document.createElement('strong');name.textContent=person.name;const handle=document.createElement('small');handle.textContent=`@${person.username} · ${person.relationship.replace('_',' ')}`;info.append(name,handle);row.append(avatar,info);
+    const action=document.createElement('button');action.className=person.relationship==='request_sent'?'secondary-button':'primary-button';
+    if(['friends','group_classmate'].includes(person.relationship)){action.textContent='Message';action.addEventListener('click',()=>openDirectConversation(person.id));}
+    else if(person.relationship==='request_sent'){action.textContent='Cancel request';action.addEventListener('click',async()=>{action.disabled=true;try{const pending=(await api('/api/friend-requests')).find(r=>r.direction==='outgoing'&&r.status==='pending'&&r.username.toLowerCase()===person.username.toLowerCase());if(pending)await api(`/api/friend-requests/${pending.id}`,{method:'DELETE'});await Promise.all([renderPeople(),renderPeopleSearch(username,`Request to @${person.username} cancelled.`)]);}catch(error){action.disabled=false;note.textContent=error.message;}});}
+    else if(person.relationship==='incoming_request'){action.textContent='Accept request';action.addEventListener('click',async()=>{try{const incoming=(await api('/api/friend-requests')).find(r=>r.direction==='incoming'&&r.status==='pending'&&r.username.toLowerCase()===person.username.toLowerCase());if(incoming)await post(`/api/friend-requests/${incoming.id}/accept`,{});await Promise.all([renderPeople(),renderPeopleSearch(username,`Connected with @${person.username}.`)]);}catch(error){note.textContent=error.message;}});}
+    else {action.textContent='Add classmate';action.addEventListener('click',async()=>{action.disabled=true;try{await post('/api/friend-requests',{username:person.username});await Promise.all([loadNotifications(),renderPeople(),renderPeopleSearch(username,`Request sent to @${person.username}.`)]);}catch(error){action.disabled=false;note.textContent=error.message;}});}
+    row.append(action);results.append(row);
+  }catch(error){note.textContent=error.message;}
+}
+
+$('#friend-search-form').addEventListener('submit',async event=>{event.preventDefault();const username=new FormData(event.currentTarget).get('username').trim().replace(/^@/,'');if(username.length<3){$('#friend-search-note').textContent='Enter at least 3 characters.';$('#people-results').replaceChildren();return;}await renderPeopleSearch(username);});
 
 async function openGroupConversation(projectId) {
   const project = projects.find(item => item.id === projectId); if (!project) return;
@@ -853,8 +854,8 @@ async function loadNotifications() {
   const records = await api('/api/notifications');
   $('#notification-dot').hidden = !records.some((item) => !item.read_at);
   const panel = $('#notifications-list'); panel.replaceChildren();
-  if (!records.length) { panel.textContent = 'You’re all caught up. New group updates will appear here.'; syncNotificationSelection(0); return; }
-  records.forEach((record) => { const item = document.createElement('article'); item.className = `notification-item ${record.read_at ? '' : 'unread'}`; const check=document.createElement('input');check.type='checkbox';check.className='notification-check';check.value=record.id;check.setAttribute('aria-label',`Select notification from ${record.actor||'StudyPilot'}`);check.addEventListener('change',()=>syncNotificationSelection(records.length));const content=document.createElement('div');content.className='notification-copy'; const text = document.createElement('p'); text.textContent = `${record.actor || 'A teammate'} ${record.detail}`; const time = document.createElement('small'); time.textContent = formatTimestamp(record.created_at);content.append(text,time);const read=document.createElement('button');read.type='button';read.className='text-button notification-read';read.textContent=record.read_at?'Mark unread':'Mark read';read.addEventListener('click',async()=>{await patch('/api/notifications',{action:record.read_at?'unread':'read',ids:[record.id]});await loadNotifications();});item.append(check,content,read); panel.append(item); });
+  if (!records.length) { panel.textContent = 'You’re all caught up.'; syncNotificationSelection(0); return; }
+  records.forEach((record) => { const item = document.createElement('article'); item.className = `notification-item ${record.read_at ? '' : 'unread'}`; const check=document.createElement('input');check.type='checkbox';check.className='notification-check';check.value=record.id;check.setAttribute('aria-label',`Select notification from ${record.actor||'StudyPilot'}`);check.addEventListener('change',()=>syncNotificationSelection(records.length));const content=document.createElement('div');content.className='notification-copy'; const text = document.createElement('p'); text.textContent = `${record.actor || 'A teammate'} ${record.detail}`; const time = document.createElement('small'); time.textContent = formatTimestamp(record.created_at);content.append(text,time);if(record.kind==='group_join_request'&&record.project_id&&record.project_name){const link=document.createElement('a');link.className='notification-link';link.href=`#/groups/${record.project_id}?requests=1`;link.textContent=`Manage requests · ${record.project_name}`;link.addEventListener('click',()=>patch('/api/notifications',{action:'read',ids:[record.id]}).catch(()=>{}));content.append(link);}const read=document.createElement('button');read.type='button';read.className='text-button notification-read';read.textContent=record.read_at?'Mark unread':'Mark read';read.addEventListener('click',async()=>{await patch('/api/notifications',{action:record.read_at?'unread':'read',ids:[record.id]});await loadNotifications();});item.append(check,content,read); panel.append(item); });
   syncNotificationSelection(records.length);
 }
 
@@ -870,10 +871,14 @@ $('#notification-clear-all').addEventListener('click',async()=>{if(!confirm('Cle
 
 $('#account-button').addEventListener('click', () => { $('#account-menu').hidden = !$('#account-menu').hidden; });
 document.addEventListener('click', (event) => { if (!event.target.closest('.account-area')) $('#account-menu').hidden = true; });
-$('#profile-open').addEventListener('click', () => { $('#account-menu').hidden = true; $('#profile-form').reset(); $('#profile-form').elements.name.value = user.name; $('#profile-form').elements.username.value = user.username; $('#profile-form').elements.bio.value=user.bio||''; $('#profile-email').value = user.email; $('#profile-error').textContent = ''; $('#profile-saved').textContent = ''; $('#profile-dialog').showModal(); });
+$('#profile-open').addEventListener('click', () => { $('#account-menu').hidden = true; $('#profile-form').reset(); $('#profile-form').elements.name.value = user.name; $('#profile-form').elements.username.value = user.username; $('#profile-form').elements.bio.value=user.bio||''; $('#profile-email').value = user.email; $('#profile-error').textContent = ''; $('#profile-saved').textContent = ''; setAvatar($('#profile-avatar-preview'),user); $('#profile-avatar-preview').style.backgroundImage=user.profile_photo?`url("/api/profile/photo?v=${user.id}")`:''; $('#profile-dialog').showModal(); });
+let profilePreviewUrl='';
+$('#profile-photo').addEventListener('change',event=>{const file=event.currentTarget.files[0];if(!file)return;if(profilePreviewUrl)URL.revokeObjectURL(profilePreviewUrl);profilePreviewUrl=URL.createObjectURL(file);$('#profile-avatar-preview').style.backgroundImage=`url("${profilePreviewUrl}")`;});
+$('#profile-avatar-preview').addEventListener('click',()=>{const source=profilePreviewUrl||(user.profile_photo?`/api/profile/photo?v=${user.id}`:'');if(!source)return;$('#profile-photo-large').src=source;$('#profile-photo-viewer').showModal();});
+$('.profile-photo-close').addEventListener('click',()=>$('#profile-photo-viewer').close());
 $('#profile-form').addEventListener('submit', async (event) => {
   event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); $('#profile-error').textContent = ''; $('#profile-saved').textContent = '';
-  try { const file=$('#profile-photo').files[0];if(file){const form=new FormData();form.append('photo',file);const response=await fetch('/api/profile/photo',{method:'POST',credentials:'same-origin',body:form});if(!response.ok){const error=await response.json().catch(()=>({}));throw new Error(error.detail||'Photo upload failed.');}user.profile_photo=true;} user = await patch('/api/profile', { name: data.name, username: data.username, bio:data.bio }); $('#account-button').setAttribute('aria-label',`Open account menu for ${user.name}`); setAvatar($('#avatar'),user); $('#profile-saved').textContent = 'Your profile is saved.'; }
+  try { const file=$('#profile-photo').files[0];if(file){const form=new FormData();form.append('photo',file);const response=await fetch('/api/profile/photo',{method:'POST',credentials:'same-origin',body:form});if(!response.ok){const error=await response.json().catch(()=>({}));throw new Error(error.detail||'Photo upload failed.');}user.profile_photo=true;} user = await patch('/api/profile', { name: data.name, username: data.username, bio:data.bio }); $('#account-button').setAttribute('aria-label',`Open account menu for ${user.name}`); setAvatar($('#avatar'),user);setAvatar($('#profile-avatar-preview'),user);$('#profile-avatar-preview').style.backgroundImage=user.profile_photo?`url("/api/profile/photo?v=${user.id}&t=${Date.now()}")`:''; $('#profile-saved').textContent = 'Your profile is saved.'; }
   catch (error) { $('#profile-error').textContent = error.message; }
 });
 

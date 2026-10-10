@@ -387,7 +387,7 @@ def request_group_membership(body: JoinCodeSubmit, user: User, request: Request)
         if attempts >= 10: raise HTTPException(status_code=429, detail="Too many attempts. Try again in a few minutes.")
         con.execute("INSERT INTO join_code_attempts(user_id) VALUES(?)", (user["id"],))
         con.commit()
-        project = con.execute("SELECT id,created_by FROM projects WHERE join_code=?", (code,)).fetchone()
+        project = con.execute("SELECT id,name,created_by FROM projects WHERE join_code=?", (code,)).fetchone()
         if project is None: raise HTTPException(status_code=404, detail="No group matches that code.")
         if con.execute("SELECT 1 FROM project_members WHERE project_id=? AND user_id=?", (project["id"], user["id"])).fetchone():
             return {"status": "already_member"}
@@ -395,7 +395,7 @@ def request_group_membership(body: JoinCodeSubmit, user: User, request: Request)
         if existing and existing["status"] == "pending": return {"status": "pending"}
         if existing and existing["status"] == "blocked": raise HTTPException(status_code=403, detail="you cannot request access to this group")
         cur = con.execute("INSERT INTO project_join_requests(project_id,user_id) VALUES(?,?)", (project["id"], user["id"]))
-        con.execute("INSERT INTO notifications(user_id,project_id,actor_id,kind,detail) VALUES(?,?,?,'group_join_request','A classmate asked to join your group.')", (project["created_by"], project["id"], user["id"]))
+        con.execute("INSERT INTO notifications(user_id,project_id,actor_id,kind,detail) VALUES(?,?,?,'group_join_request',?)", (project["created_by"], project["id"], user["id"], f'A classmate asked to join “{project["name"]}”.'))
         return {"status": "pending", "request_id": cur.lastrowid}
 
 
@@ -673,7 +673,7 @@ def delete_task(task_id: int, user: User):
 def list_comments(task_id: int, user: User):
     with db.connect() as con:
         _task_access(con, task_id, user["id"])
-        return [dict(row) for row in con.execute("SELECT c.id,c.task_id,c.body,c.created_at,u.id AS user_id,u.name FROM comments c JOIN users u ON u.id=c.user_id WHERE task_id=? ORDER BY c.id", (task_id,)).fetchall()]
+        return [dict(row) for row in con.execute("SELECT c.id,c.task_id,c.body,c.created_at,c.edited_at,u.id AS user_id,u.name FROM comments c JOIN users u ON u.id=c.user_id WHERE task_id=? ORDER BY c.id", (task_id,)).fetchall()]
 
 
 @app.post("/api/tasks/{task_id}/comments", status_code=201)
@@ -685,7 +685,32 @@ def create_comment(task_id: int, body: MessageCreate, user: User):
         task = _task_access(con, task_id, user["id"], write=True)
         cur = con.execute("INSERT INTO comments(task_id,user_id,body) VALUES(?,?,?)", (task_id, user["id"], text))
         _log_activity(con, task["project_id"], user["id"], "comment_added", f"commented on {task['title']}")
-        return dict(con.execute("SELECT c.id,c.task_id,c.body,c.created_at,u.id AS user_id,u.name FROM comments c JOIN users u ON u.id=c.user_id WHERE c.id=?", (cur.lastrowid,)).fetchone())
+        return dict(con.execute("SELECT c.id,c.task_id,c.body,c.created_at,c.edited_at,u.id AS user_id,u.name FROM comments c JOIN users u ON u.id=c.user_id WHERE c.id=?", (cur.lastrowid,)).fetchone())
+
+
+@app.patch("/api/tasks/{task_id}/comments/{comment_id}")
+def update_comment(task_id: int, comment_id: int, body: MessageUpdate, user: User):
+    text = body.body.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="comment cannot be blank")
+    with db.connect() as con:
+        _task_access(con, task_id, user["id"], write=True)
+        row = con.execute("SELECT user_id FROM comments WHERE id=? AND task_id=?", (comment_id, task_id)).fetchone()
+        if row is None: raise HTTPException(status_code=404, detail="comment not found")
+        if row["user_id"] != user["id"]: raise HTTPException(status_code=403, detail="you can only edit your own comments")
+        con.execute("UPDATE comments SET body=?,edited_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?", (text, comment_id))
+        return dict(con.execute("SELECT c.id,c.task_id,c.body,c.created_at,c.edited_at,u.id AS user_id,u.name FROM comments c JOIN users u ON u.id=c.user_id WHERE c.id=?", (comment_id,)).fetchone())
+
+
+@app.delete("/api/tasks/{task_id}/comments/{comment_id}", status_code=204)
+def delete_comment(task_id: int, comment_id: int, user: User):
+    with db.connect() as con:
+        _task_access(con, task_id, user["id"], write=True)
+        row = con.execute("SELECT user_id FROM comments WHERE id=? AND task_id=?", (comment_id, task_id)).fetchone()
+        if row is None: raise HTTPException(status_code=404, detail="comment not found")
+        if row["user_id"] != user["id"]: raise HTTPException(status_code=403, detail="you can only delete your own comments")
+        con.execute("DELETE FROM comments WHERE id=?", (comment_id,))
+    return Response(status_code=204)
 
 
 @app.get("/api/projects/{project_id}/messages")
@@ -1052,8 +1077,8 @@ def activity(user: User, limit: int = Query(default=30, ge=1, le=100)):
 @app.get("/api/notifications")
 def notifications(user: User):
     with db.connect() as con:
-        return [dict(row) for row in con.execute("""SELECT n.id,n.project_id,n.kind,n.detail,n.read_at,n.created_at,u.name AS actor
-            FROM notifications n LEFT JOIN users u ON u.id=n.actor_id WHERE n.user_id=? ORDER BY n.id DESC LIMIT 50""", (user["id"],)).fetchall()]
+        return [dict(row) for row in con.execute("""SELECT n.id,n.project_id,n.kind,n.detail,n.read_at,n.created_at,u.name AS actor,p.name AS project_name
+            FROM notifications n LEFT JOIN users u ON u.id=n.actor_id LEFT JOIN projects p ON p.id=n.project_id WHERE n.user_id=? ORDER BY n.id DESC LIMIT 50""", (user["id"],)).fetchall()]
 
 
 @app.post("/api/notifications/read", status_code=204)

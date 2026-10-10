@@ -79,6 +79,14 @@ def test_projects_invites_roles_chat_comments_and_notifications(tmp_path, monkey
             assert len(teammate.get(f"/api/tasks?project_id={project['id']}").json()) == 1
             comment = teammate.post(f"/api/tasks/{task.json()['id']}/comments", json={"body": "I can review this tonight."})
             assert comment.status_code == 201
+            comment_id = comment.json()["id"]
+            assert owner.patch(f"/api/tasks/{task.json()['id']}/comments/{comment_id}", json={"body": "Owner cannot edit this."}).status_code == 403
+            edited = teammate.patch(f"/api/tasks/{task.json()['id']}/comments/{comment_id}", json={"body": "I reviewed this tonight."})
+            assert edited.status_code == 200 and edited.json()["body"] == "I reviewed this tonight."
+            assert edited.json()["edited_at"]
+            assert owner.delete(f"/api/tasks/{task.json()['id']}/comments/{comment_id}").status_code == 403
+            assert teammate.delete(f"/api/tasks/{task.json()['id']}/comments/{comment_id}").status_code == 204
+            assert owner.get(f"/api/tasks/{task.json()['id']}/comments").json() == []
             message = teammate.post(f"/api/projects/{project['id']}/messages", json={"body": "I found a useful source."})
             assert message.status_code == 201
             assert owner.get(f"/api/projects/{project['id']}/messages").json()[0]["body"] == "I found a useful source."
@@ -276,12 +284,18 @@ def test_shareable_join_code_request_approval_rotation_and_unread(tmp_path, monk
         register(owner, "owner@example.edu", "Owner")
         project = owner.post("/api/projects", json={"name": "Chemistry group"}).json()
         code = project["join_code"]
+        updated = owner.patch(f"/api/projects/{project['id']}", json={"name":"Organic chemistry", "description":"Shared revision"})
+        assert updated.status_code == 200 and updated.json()["name"] == "Organic chemistry"
+        assert owner.get("/api/projects").json()[0]["name"] == "Organic chemistry"
         assert code.startswith("SP-") and len(code.removeprefix("SP-")) == 14
         with TestClient(app) as student:
             register(student, "student@example.edu", "Student")
             assert student.get(f"/api/projects/{project['id']}").status_code == 404
             request = student.post("/api/projects/join-requests", json={"code": code})
             assert request.status_code == 202 and request.json()["status"] == "pending"
+            notice = owner.get("/api/notifications").json()[0]
+            assert notice["kind"] == "group_join_request" and notice["project_name"] == "Organic chemistry"
+            assert "Organic chemistry" in notice["detail"]
             assert student.get(f"/api/projects/{project['id']}").status_code == 404
             pending = owner.get(f"/api/projects/{project['id']}/join-requests").json()
             assert len(pending) == 1 and pending[0]["username"] == "student"
