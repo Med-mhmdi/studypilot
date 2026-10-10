@@ -36,6 +36,7 @@ class PasswordUpdate(RequestModel):
 class ProjectCreate(RequestModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=2000)
+    avatar: str = Field(default="violet", pattern=r"^(violet|ocean|mint|coral|sun)$")
 
 
 class NotificationAction(RequestModel):
@@ -46,6 +47,7 @@ class NotificationAction(RequestModel):
 class ProjectUpdate(RequestModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=2000)
+    avatar: str | None = Field(default=None, pattern=r"^(violet|ocean|mint|coral|sun)$")
 
 
 class MemberRoleUpdate(RequestModel):

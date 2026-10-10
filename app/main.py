@@ -304,7 +304,7 @@ def create_project(body: ProjectCreate, user: User):
         for _ in range(5):
             code = "SP-" + "".join(secrets.choice(alphabet) for _ in range(14))
             try:
-                cur = con.execute("INSERT INTO projects(name,description,created_by,join_code) VALUES(?,?,?,?)", (name, body.description.strip(), user["id"], code))
+                cur = con.execute("INSERT INTO projects(name,description,created_by,join_code,avatar) VALUES(?,?,?,?,?)", (name, body.description.strip(), user["id"], code, body.avatar))
                 break
             except sqlite3.IntegrityError:
                 if _ == 4: raise HTTPException(status_code=503, detail="could not create a unique group code")
@@ -323,7 +323,7 @@ def update_project(project_id: int, body: ProjectUpdate, user: User):
         role = _membership(con, project_id, user["id"])["role"]
         if role not in {"owner", "admin"}:
             raise HTTPException(status_code=403, detail="admin access is required")
-        con.execute("UPDATE projects SET name=?,description=? WHERE id=?", (name, body.description.strip(), project_id))
+        con.execute("UPDATE projects SET name=?,description=?,avatar=COALESCE(?,avatar) WHERE id=?", (name, body.description.strip(), body.avatar, project_id))
         _log_activity(con, project_id, user["id"], "project_updated", f"updated group details")
         return dict(con.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
 
@@ -560,7 +560,8 @@ def accept_invite_code(body: InviteAccept, user: User):
 @app.get("/api/tasks")
 def list_tasks(user: User, status: Annotated[TaskStatus | None, Query()] = None,
                course: Annotated[str | None, Query(max_length=80)] = None,
-               project_id: int | None = None):
+                project_id: int | None = None,
+               scope: Annotated[str, Query(pattern="^(all|mine|group)$")] = "all"):
     clauses = ["(t.owner_id=? AND t.project_id IS NULL OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=t.project_id AND pm.user_id=?))"]
     values: list[object] = [user["id"], user["id"]]
     if status:
@@ -569,6 +570,10 @@ def list_tasks(user: User, status: Annotated[TaskStatus | None, Query()] = None,
         clauses.append("t.course=?"); values.append(course)
     if project_id is not None:
         clauses.append("t.project_id=?"); values.append(project_id)
+    if scope == "mine":
+        clauses.append("t.project_id IS NULL")
+    elif scope == "group":
+        clauses.append("t.project_id IS NOT NULL")
     where = " WHERE " + " AND ".join(clauses)
     with db.connect() as con:
         rows = con.execute(f"SELECT t.* FROM tasks t{where} ORDER BY CASE t.status WHEN 'done' THEN 1 ELSE 0 END,t.due_date,t.id", values).fetchall()

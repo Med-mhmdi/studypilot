@@ -66,6 +66,8 @@ def initialize() -> None:
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
         )""")
         project_columns = {row["name"] for row in con.execute("PRAGMA table_info(projects)")}
+        if "avatar" not in project_columns:
+            con.execute("ALTER TABLE projects ADD COLUMN avatar TEXT NOT NULL DEFAULT 'violet'")
         if "join_code" not in project_columns:
             con.execute("ALTER TABLE projects ADD COLUMN join_code TEXT")
         alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"

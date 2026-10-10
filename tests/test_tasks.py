@@ -377,7 +377,28 @@ def test_group_role_permissions_and_ownership_transfer(tmp_path, monkeypatch):
             assert student.delete(f"/api/projects/{project['id']}").status_code == 403
             assert owner.post(f"/api/projects/{project['id']}/transfer-owner", json={"user_id":2}).status_code == 200
             assert owner.delete(f"/api/projects/{project['id']}").status_code == 403
-            assert student.delete(f"/api/projects/{project['id']}").status_code == 204
+        assert student.delete(f"/api/projects/{project['id']}").status_code == 204
+
+
+def test_assignment_scope_filters_and_group_avatar_permissions(tmp_path, monkeypatch):
+    with client_for(tmp_path / "scope-avatar.db", monkeypatch) as owner:
+        register(owner)
+        personal = owner.post("/api/tasks", json={"title":"Personal reading", "due_date":"2026-10-21"}).json()
+        project = owner.post("/api/projects", json={"name":"Study circle", "avatar":"ocean"}).json()
+        assert project["avatar"] == "ocean"
+        shared = owner.post("/api/tasks", json={"title":"Group notes", "due_date":"2026-10-22", "project_id":project["id"]}).json()
+        assert {task["id"] for task in owner.get("/api/tasks?scope=all").json()} == {personal["id"], shared["id"]}
+        assert [task["id"] for task in owner.get("/api/tasks?scope=mine").json()] == [personal["id"]]
+        assert [task["id"] for task in owner.get("/api/tasks?scope=group").json()] == [shared["id"]]
+        assert owner.get("/api/tasks?scope=unknown").status_code == 422
+        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email":"student@example.edu", "role":"editor"}).json()
+        with client_for(tmp_path / "scope-avatar.db", monkeypatch) as student:
+            register(student, "student@example.edu", "Student")
+            assert student.post("/api/invitations/accept", json={"token":invite["token"]}).status_code == 200
+            assert student.patch(f"/api/projects/{project['id']}", json={"name":"Changed", "avatar":"sun"}).status_code == 403
+        updated = owner.patch(f"/api/projects/{project['id']}", json={"name":"Study circle", "description":"Shared notes", "avatar":"sun"})
+        assert updated.status_code == 200 and updated.json()["avatar"] == "sun"
+        assert owner.patch(f"/api/projects/{project['id']}", json={"name":"Study circle", "avatar":"file-path"}).status_code == 422
 
 
 def test_legacy_group_roles_migrate_without_granting_old_viewers_write_access(tmp_path, monkeypatch):

@@ -210,7 +210,7 @@ async function renderRoute() {
 window.addEventListener('hashchange', renderRoute);
 
 async function loadTasks(projectId = null) {
-  tasks = await api(projectId ? `/api/tasks?project_id=${projectId}` : '/api/tasks');
+  tasks = await api(projectId ? `/api/tasks?project_id=${projectId}` : `/api/tasks?scope=${encodeURIComponent($('#scope-filter')?.value || 'all')}`);
   return tasks;
 }
 
@@ -257,8 +257,7 @@ function filterTasks(items) {
   const course = $('#course-filter').value;
   const scope = $('#scope-filter')?.value || 'all';
   return items.filter((task) => {
-    const mine = Number(task.owner_id) === Number(user?.id) || task.assignees?.some((person) => Number(person.id) === Number(user?.id));
-    return (!course || task.course === course) && (scope === 'all' || (scope === 'mine' ? mine : Boolean(task.project_id))) && (!query || `${task.title} ${task.course} ${task.project_name || ''}`.toLocaleLowerCase().includes(query));
+    return (!course || task.course === course) && (scope === 'all' || (scope === 'mine' ? !task.project_id : Boolean(task.project_id))) && (!query || `${task.title} ${task.course} ${task.project_name || ''}`.toLocaleLowerCase().includes(query));
   });
 }
 
@@ -279,7 +278,7 @@ function updateDashboardBoard() {
 
 $('#task-search').addEventListener('input', updateDashboardBoard);
 $('#course-filter').addEventListener('change', updateDashboardBoard);
-$('#scope-filter').addEventListener('change', updateDashboardBoard);
+$('#scope-filter').addEventListener('change', async () => { try { await loadTasks(); updateDashboardBoard(); } catch(error) { showMessage(error.message); } });
 $('#new-task').addEventListener('click', () => openNewTask(null));
 $('#board-new-task').addEventListener('click', () => openNewTask(null));
 $$('.metric-card').forEach((card) => card.addEventListener('click', () => { const filter=card.dataset.metric === 'in_progress' ? 'doing' : card.dataset.metric; location.hash = `#/board?filter=${filter}`; }));
@@ -317,7 +316,7 @@ function renderBoard(board, items, project, onlyStatus = 'all', countItems = ite
     rail.append(button);
   }
   board.append(rail);
-  const lanes = document.createElement('div');lanes.className='board-lanes';
+  const lanes = document.createElement('div');lanes.className=`board-lanes${focused==='all'?'':' is-focused'}`;
   const statuses = focused==='all' ? ['todo','in_progress','done','overdue'] : [focused];
   for (const status of statuses) {
     const lane = document.createElement('section');
@@ -327,7 +326,7 @@ function renderBoard(board, items, project, onlyStatus = 'all', countItems = ite
     heading.className = 'lane-heading';
     const label = document.createElement('h3'); label.textContent = statusNames[status];
     const count = document.createElement('span'); count.className = 'lane-count';
-    const cards = status==='overdue' ? items.filter(isOverdue) : items.filter(task => task.status === status && (focused!=='all' || !isOverdue(task)));
+    const cards = status==='overdue' ? items.filter(isOverdue) : items.filter(task => task.status === status);
     count.textContent = cards.length;
     heading.append(label, count);
     const content = document.createElement('div'); content.className = 'lane-cards';
@@ -377,12 +376,16 @@ function makeTaskCard(task, project) {
     if (start) { const duration = document.createElement('small'); duration.className='work-duration'; const hours=Math.max(0,Math.round((end-start)/3600000)); duration.textContent = end ? `Work time · ${hours < 24 ? `${hours} hours` : `${Math.round(hours/24)} days`}` : `Started · ${formatTimestamp(task.started_at)}`; assignees.append(document.createElement('br'),duration); }
   }
   const actions = document.createElement('div'); actions.className = 'task-card-actions';
-  const moveMenu=document.createElement('details');moveMenu.className='task-move-menu';moveMenu.hidden=!canEdit;
-  const summary=document.createElement('summary');summary.textContent='Move';summary.setAttribute('aria-label',`Move ${task.title}`);moveMenu.append(summary);
-  Object.entries(statusNames).filter(([value])=>value!=='overdue').forEach(([value,name])=>{if(value===task.status)return;const option=document.createElement('button');option.type='button';option.textContent=`Move to ${name}`;option.addEventListener('click',()=>{moveMenu.open=false;changeTaskStatus(task,value,project);});moveMenu.append(option);});
+  const moveButton=document.createElement('button');moveButton.type='button';moveButton.className='task-move-trigger';moveButton.textContent='Move';moveButton.setAttribute('aria-label',`Move ${task.title}`);moveButton.hidden=!canEdit;
+  const moveMenu=document.createElement('div');moveMenu.className='task-move-popover';moveMenu.setAttribute('popover','auto');moveMenu.setAttribute('aria-label',`Move ${task.title} to a status`);
+  Object.entries(statusNames).filter(([value])=>value!=='overdue').forEach(([value,name])=>{if(value===task.status)return;const option=document.createElement('button');option.type='button';option.textContent=`Move to ${name}`;option.addEventListener('click',()=>{moveMenu.hidePopover();moveButton.setAttribute('aria-expanded','false');changeTaskStatus(task,value,project);});moveMenu.append(option);});
+  if(canEdit)document.body.append(moveMenu);
+  moveButton.setAttribute('aria-haspopup','menu');moveButton.setAttribute('aria-expanded','false');
+  moveButton.addEventListener('click',()=>{if(moveMenu.matches(':popover-open')){moveMenu.hidePopover();moveButton.setAttribute('aria-expanded','false');return;}moveMenu.showPopover();moveButton.setAttribute('aria-expanded','true');const rect=moveButton.getBoundingClientRect();const width=moveMenu.offsetWidth;const height=moveMenu.offsetHeight;const left=Math.max(8,Math.min(rect.right-width,window.innerWidth-width-8));const top=rect.bottom+height+8<=window.innerHeight?rect.bottom+6:Math.max(8,rect.top-height-6);moveMenu.style.left=`${left}px`;moveMenu.style.top=`${top}px`;});
+  moveMenu.addEventListener('toggle',event=>{if(event.newState==='closed')moveButton.setAttribute('aria-expanded','false');});
   const comment = document.createElement('button'); comment.className = 'text-button'; comment.textContent = 'Comments'; comment.addEventListener('click', () => toggleComments(card, task, project));
   const historyButton=document.createElement('button');historyButton.className='text-button';historyButton.textContent='History';historyButton.addEventListener('click',()=>toggleTaskHistory(card,task));
-  actions.append(moveMenu, comment, historyButton);
+  actions.append(moveButton, comment, historyButton);
   card.append(titleLine, context, deadline, assignees, actions);
   return card;
 }
@@ -396,14 +399,31 @@ async function toggleTaskHistory(card, task) {
 function makeTag(text, className) { const tag = document.createElement('span'); tag.className = className; tag.textContent = text; return tag; }
 
 async function changeTaskStatus(task, status, project) {
+  const previous = { status: task.status, started_at: task.started_at, completed_at: task.completed_at };
+  const board = project ? $('#group-task-board') : $('#task-board');
+  const oldFocus = project ? (board?.dataset.focusStatus || 'all') : activeStatus;
+  const wasOverdue = isOverdue(task);
+  task.status = status;
+  if (status === 'in_progress' && !task.started_at) task.started_at = new Date().toISOString();
+  if (status === 'done') task.completed_at = new Date().toISOString();
+  else task.completed_at = null;
+  const newFocus = oldFocus === 'all' ? 'all' : (oldFocus === previous.status || (oldFocus === 'overdue' && wasOverdue) ? status : oldFocus);
+  if (project) board.dataset.focusStatus = newFocus;
+  else activeStatus = newFocus;
+  if (project) renderBoard(board, tasks, project, newFocus, tasks);
+  else updateDashboardBoard();
   try {
     await patch(`/api/tasks/${task.id}`, { status });
     showMessage('');
     await loadTasks(project?.id || null);
     if (project) await loadProjectBoard(project);
-    else if (routeFromHash().name === 'board') renderBoardView();
-    else renderDashboard();
-  } catch (error) { showMessage(error.message); }
+    else updateDashboardBoard();
+  } catch (error) {
+    Object.assign(task, previous);
+    if (project) { board.dataset.focusStatus = oldFocus; renderBoard(board, tasks, project, oldFocus, tasks); }
+    else { activeStatus = oldFocus; updateDashboardBoard(); }
+    showMessage(error.message);
+  }
 }
 
 function openNewTask(project) {
@@ -531,15 +551,20 @@ function renderProjects() {
   }
   projects.forEach((project) => {
     const card = document.createElement('button'); card.className = 'project-card';
-    const icon = document.createElement('span'); icon.className = 'project-icon'; icon.textContent = project.name.trim().slice(0, 1).toUpperCase();
+    const icon = document.createElement('span'); icon.className = `project-icon group-avatar-${project.avatar || 'violet'}`; icon.setAttribute('aria-hidden','true'); icon.textContent = ({violet:'✦',ocean:'≈',mint:'❋',coral:'✿',sun:'☼'})[project.avatar] || '✦';
     const title = document.createElement('strong'); title.textContent = project.name;
     const description = document.createElement('p'); description.textContent = project.description || '';
-    const foot = document.createElement('span'); foot.className = 'project-foot'; foot.textContent = `${project.member_count} members · ${project.task_count} assignments`;
-    card.append(icon, title, description, foot); card.addEventListener('click', () => { location.hash = `#/groups/${project.id}`; }); grid.append(card);
+    const metrics = document.createElement('span'); metrics.className = 'project-metrics';
+    const members = document.createElement('span'); members.className = 'project-metric'; const memberIcon=document.createElement('b'); memberIcon.setAttribute('aria-hidden','true'); memberIcon.textContent='♙';
+    const memberCount = document.createElement('strong'); memberCount.textContent = project.member_count; const memberLabel = document.createElement('small'); memberLabel.textContent = 'members'; members.append(memberIcon,memberCount,memberLabel);
+    const assignments = document.createElement('span'); assignments.className = 'project-metric'; const taskIcon=document.createElement('b'); taskIcon.setAttribute('aria-hidden','true'); taskIcon.textContent='▤';
+    const taskCount = document.createElement('strong'); taskCount.textContent = project.task_count; const taskLabel = document.createElement('small'); taskLabel.textContent = 'assignments'; assignments.append(taskIcon,taskCount,taskLabel);
+    metrics.append(members,assignments);
+    card.append(icon, title, description, metrics); card.addEventListener('click', () => { location.hash = `#/groups/${project.id}`; }); grid.append(card);
   });
 }
 
-$('#new-project').addEventListener('click', () => { $('#project-form').reset(); $('#project-form').dataset.id=''; $('#project-dialog-title').textContent='Start a study group'; $('#save-group').textContent='Create group'; $('#delete-group').hidden=true; $('#project-error').textContent = ''; $('#project-dialog').showModal(); });
+$('#new-project').addEventListener('click', () => { $('#project-form').reset(); $('#project-form').elements.avatar.value='violet'; $('#project-form').dataset.id=''; $('#project-dialog-title').textContent='Start a study group'; $('#save-group').textContent='Create group'; $('#delete-group').hidden=true; $('#project-error').textContent = ''; $('#project-dialog').showModal(); });
 $('#project-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   try { const id=event.currentTarget.dataset.id;const payload=Object.fromEntries(new FormData(event.currentTarget));const project=id?await patch(`/api/projects/${id}`,payload):await post('/api/projects',payload); $('#project-dialog').close(); await loadProjects(); if(id&&routeFromHash().name==='groups'&&Number(routeFromHash().id)===Number(project.id)){await renderProject(project.id);if(activeGroupChatId===project.id){const header=$('.thread-header h2');if(header)header.textContent=project.name;await loadConversations();renderConversations();}}else location.hash = `#/groups/${project.id}`; }
@@ -575,7 +600,7 @@ async function renderProject(projectId) {
   const titlebox = document.createElement('div'); const title = document.createElement('h2'); title.textContent = activeProject.name; const description = document.createElement('p'); description.textContent = activeProject.description || ''; titlebox.append(title, description);
   const actions = document.createElement('div'); actions.className = 'page-actions';
   const addTask = document.createElement('button'); addTask.className = 'primary-button'; addTask.textContent = '＋ Assignment'; addTask.hidden = activeProject.role === 'viewer'; addTask.addEventListener('click', () => openNewTask(activeProject));
-  const editGroup=document.createElement('button');editGroup.className='secondary-button';editGroup.textContent='Edit group';editGroup.hidden=!['owner','admin'].includes(activeProject.role);editGroup.addEventListener('click',()=>{const form=$('#project-form');form.reset();form.dataset.id=String(activeProject.id);form.elements.name.value=activeProject.name;form.elements.description.value=activeProject.description||'';$('#project-dialog-title').textContent='Edit group';$('#save-group').textContent='Save changes';$('#delete-group').hidden=activeProject.role!=='owner';$('#project-error').textContent='';$('#project-dialog').showModal();});
+  const editGroup=document.createElement('button');editGroup.className='secondary-button';editGroup.textContent='Edit group';editGroup.hidden=!['owner','admin'].includes(activeProject.role);editGroup.addEventListener('click',()=>{const form=$('#project-form');form.reset();form.dataset.id=String(activeProject.id);form.elements.name.value=activeProject.name;form.elements.description.value=activeProject.description||'';form.elements.avatar.value=activeProject.avatar||'violet';$('#project-dialog-title').textContent='Edit group';$('#save-group').textContent='Save changes';$('#delete-group').hidden=activeProject.role!=='owner';$('#project-error').textContent='';$('#project-dialog').showModal();});
   const invite = document.createElement('button'); invite.className = 'secondary-button'; invite.textContent = 'Invite members'; invite.hidden = !['owner','admin'].includes(activeProject.role); invite.addEventListener('click', async () => { $('#group-join-code').textContent = activeProject.join_code; await loadJoinRequests(activeProject.id); $('#invite-dialog').showModal(); });
   const openChat = document.createElement('a'); openChat.className = 'secondary-button'; openChat.href = `#/messages?group=${activeProject.id}`; openChat.textContent = 'Open group chat';
   actions.append(addTask, editGroup, invite, openChat); top.append(titlebox, actions); head.append(back, top); pane.append(head);
