@@ -373,6 +373,8 @@ def test_group_role_permissions_and_ownership_transfer(tmp_path, monkeypatch):
             assert student.post(f"/api/projects/{project['id']}/invites", json={"email":"other@example.edu"}).status_code == 403
             assert owner.patch(f"/api/projects/{project['id']}/members/2", json={"role":"admin"}).json()["role"] == "admin"
             assert student.patch(f"/api/projects/{project['id']}", json={"name":"Team renamed","description":"Shared goal"}).status_code == 200
+            admin_update = student.patch(f"/api/projects/{project['id']}", json={"name":"Team renamed","description":"Shared goal","avatar":"ocean"})
+            assert admin_update.status_code == 200 and admin_update.json()["avatar"] == "ocean"
             assert student.delete(f"/api/projects/{project['id']}/members/1").status_code == 403
             assert student.delete(f"/api/projects/{project['id']}").status_code == 403
             assert owner.post(f"/api/projects/{project['id']}/transfer-owner", json={"user_id":2}).status_code == 200
