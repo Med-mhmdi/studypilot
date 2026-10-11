@@ -58,11 +58,6 @@ class OwnershipTransfer(RequestModel):
     user_id: int = Field(gt=0)
 
 
-class InviteCreate(RequestModel):
-    email: EmailStr
-    role: str = Field(default="student", pattern="^(student|editor|viewer)$")
-
-
 class MessageCreate(RequestModel):
     body: str = Field(min_length=1, max_length=2000)
 
@@ -79,21 +74,17 @@ class JoinCodeSubmit(RequestModel):
     code: str = Field(min_length=10, max_length=24)
 
 
-class InviteAccept(RequestModel):
-    token: str = Field(min_length=20, max_length=200)
-
-
 class DirectConversationCreate(RequestModel):
     recipient_id: int = Field(gt=0)
 
 
 class MilestoneCreate(RequestModel):
-    title: str = Field(min_length=1, max_length=160)
-    due_date: date
+    title: str = Field(min_length=1, max_length=40)
+    due_date: date | None = None
 
 
 class MilestoneUpdate(RequestModel):
-    title: str | None = Field(default=None, min_length=1, max_length=160)
+    title: str | None = Field(default=None, min_length=1, max_length=40)
     due_date: date | None = None
     status: str | None = Field(default=None, pattern="^(open|done)$")
 

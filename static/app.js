@@ -128,7 +128,6 @@ $('#auth-form').addEventListener('submit', async (event) => {
     $('#auth-screen').hidden = true;
     $('#app-screen').hidden = false;
     await startApp();
-    await acceptUrlInvitation();
     await renderRoute();
   } catch (error) { $('#auth-error').textContent = error.message; }
 });
@@ -139,12 +138,10 @@ async function boot() {
     $('#auth-screen').hidden = true;
     $('#app-screen').hidden = false;
     await startApp();
-    await acceptUrlInvitation();
   } catch {
     $('#auth-screen').hidden = false;
     $('#app-screen').hidden = true;
     authMode(false);
-    if (new URLSearchParams(location.search).has('invite')) $('#auth-error').textContent = 'Sign in with the invited email or create an account using it.';
   }
   await renderRoute();
 }
@@ -155,15 +152,6 @@ async function startApp() {
   showMessage('');
   try { await Promise.all([loadProjects(), loadTasks(), loadNotifications(), loadPeople(), loadConversations()]); }
   catch (error) { showMessage(error.message); }
-}
-
-async function acceptUrlInvitation() {
-  const token = new URLSearchParams(location.search).get('invite');
-  if (!token) return;
-  const result = await post(`/api/invitations/${encodeURIComponent(token)}/accept`, {});
-  history.replaceState(null, '', `${location.pathname}${location.hash || '#/groups'}`);
-  await loadProjects();
-  location.hash = `#/groups/${result.id}`;
 }
 
 function routeFromHash() {
@@ -243,12 +231,11 @@ function renderDashboard() {
   $('#overdue').textContent = tasks.filter(isOverdue).length;
   const rate = tasks.length ? Math.round(done / tasks.length * 100) : 0;
   $('#completion-rate').textContent = `${rate}%`;
-  $('#completion-bar').style.width = `${rate}%`;
-  $('#progress-caption').textContent = tasks.length ? `${done} of ${tasks.length} assignments completed` : 'Add an assignment to start tracking progress.';
+  const overdueCount=tasks.filter(isOverdue).length;const activeDoing=tasks.filter(task=>task.status==='in_progress'&&!isOverdue(task)).length;const activeTodo=tasks.filter(task=>task.status==='todo'&&!isOverdue(task)).length;
+  const bar=$('#completion-bar');bar.replaceChildren();[['done',done],['overdue',overdueCount],['doing',activeDoing],['todo',activeTodo]].forEach(([kind,count])=>{if(!count)return;const segment=document.createElement('span');segment.className=`progress-segment progress-${kind}`;segment.style.width=`${count/tasks.length*100}%`;segment.setAttribute('aria-label',`${count} ${kind}`);bar.append(segment);});
   $('#group-summary').textContent = `${projects.length} study groups · ${projects.reduce((sum, project) => sum + Number(project.member_count || 0), 0)} group memberships`;
   const preview = $('#todo-preview'); preview.replaceChildren();
   const focus = tasks.filter((task) => task.status !== 'done').sort((a, b) => Number(isOverdue(b)) - Number(isOverdue(a)) || ({high:0,medium:1,low:2}[a.priority] - {high:0,medium:1,low:2}[b.priority]) || a.due_date.localeCompare(b.due_date)).slice(0, 5);
-  if (!focus.length) { const empty = document.createElement('p'); empty.className = 'subtle-empty'; empty.textContent = 'Nothing pending. Enjoy the breathing room.'; preview.append(empty); }
   focus.forEach((task) => { const row = document.createElement('button'); row.className = 'todo-preview-row'; const title = document.createElement('strong'); title.textContent = task.title; const meta = document.createElement('small'); meta.textContent = `${isOverdue(task) ? 'Overdue' : `Due ${formatDate(task.due_date)}`} · ${task.priority} priority`; row.append(title, meta); row.addEventListener('click', () => { location.hash = `#/board?filter=${isOverdue(task) ? 'overdue' : 'all'}`; }); preview.append(row); });
 }
 
@@ -301,7 +288,7 @@ $('#empty-add').addEventListener('click', () => {
 const statusNames = { todo: 'To Do', in_progress: 'Doing', done: 'Done', overdue: 'Overdue' };
 function renderBoard(board, items, project, onlyStatus = 'all', countItems = items) {
   board.replaceChildren();
-  board.className = 'task-board board-layout';
+  board.className = `task-board board-layout${board.id === 'task-board' ? ' main-board-layout' : ''}`;
   const isMainBoard = board.id === 'task-board';
   const focused = onlyStatus || 'all';
   const counts = {todo:countItems.filter(task=>task.status==='todo').length,in_progress:countItems.filter(task=>task.status==='in_progress').length,done:countItems.filter(task=>task.status==='done').length,overdue:countItems.filter(isOverdue).length};
@@ -330,7 +317,6 @@ function renderBoard(board, items, project, onlyStatus = 'all', countItems = ite
     count.textContent = cards.length;
     heading.append(label, count);
     const content = document.createElement('div'); content.className = 'lane-cards';
-    if (!cards.length) { const empty = document.createElement('p'); empty.className = 'lane-empty'; empty.textContent = status==='overdue'?'No overdue assignments':'Drop work here'; content.append(empty); }
     cards.forEach((task) => content.append(makeTaskCard(task, project)));
     lane.append(heading, content);
     lane.addEventListener('dragover', (event) => { if ((!project || !['viewer'].includes(project.role)) && !project?.legacy_readonly && status!=='overdue') { event.preventDefault(); lane.classList.add('drop-target'); } });
@@ -350,17 +336,17 @@ function makeTaskCard(task, project) {
   const card = document.createElement('article');
   card.className = `task-card priority-card-${task.priority}`;
   const canEdit = project?.role !== 'viewer' && !project?.legacy_readonly;
-  card.draggable = canEdit;
+  card.draggable = false;
   card.tabIndex = canEdit ? 0 : -1;
-  if (canEdit) card.setAttribute('aria-keyshortcuts','ArrowLeft ArrowRight');
-  card.addEventListener('keydown', (event) => { if (!canEdit || !['ArrowLeft','ArrowRight'].includes(event.key)) return; event.preventDefault(); const order=['todo','in_progress','done'];const pos=order.indexOf(task.status);const next=order[Math.max(0,Math.min(order.length-1,pos+(event.key==='ArrowRight'?1:-1)))];if(next!==task.status)changeTaskStatus(task,next,project); });
-  card.addEventListener('dragstart', (event) => { event.dataTransfer.setData('text/plain', String(task.id)); event.dataTransfer.effectAllowed = 'move'; });
-  card.addEventListener('click',event=>{if(canEdit&&!event.target.closest('button,details,input,textarea,select,a'))openEditTask(task,project);});
+  if (canEdit) card.setAttribute('aria-keyshortcuts','Enter ArrowLeft ArrowRight');
+  card.addEventListener('keydown', (event) => { if (event.target !== card) return; if(event.key==='Enter'){event.preventDefault();openTaskDetails(task,project);return;} if (!canEdit || !['ArrowLeft','ArrowRight'].includes(event.key)) return; event.preventDefault(); const order=['todo','in_progress','done'];const pos=order.indexOf(task.status);const next=order[Math.max(0,Math.min(order.length-1,pos+(event.key==='ArrowRight'?1:-1)))];if(next!==task.status)changeTaskStatus(task,next,project); });
+  card.addEventListener('dblclick',event=>{if(canEdit&&!event.target.closest('button,a,input,textarea,select'))openEditTask(task,project);});
   const titleLine = document.createElement('div'); titleLine.className = 'task-card-title';
-  const title = document.createElement('button'); title.className = 'task-title'; title.textContent = task.title; title.disabled = !canEdit; title.addEventListener('click', () => openEditTask(task, project));
+  const title = document.createElement('button'); title.className = 'task-title'; title.textContent = task.title; title.type='button'; title.setAttribute('aria-label',`View ${task.title}`);let titleClickTimer;title.addEventListener('click', () => {clearTimeout(titleClickTimer);titleClickTimer=setTimeout(()=>openTaskDetails(task, project),230);});title.addEventListener('dblclick',event=>{event.preventDefault();clearTimeout(titleClickTimer);if(canEdit)openEditTask(task,project);});
   const topActions=document.createElement('div');topActions.className='task-top-actions';
-  topActions.append(makeTag(task.project_id ? 'Group' : 'Personal',`scope-pill ${task.project_id?'group':'personal'}`));
-  const menu = document.createElement('button'); menu.className = 'row-menu'; menu.setAttribute('aria-label', `Edit ${task.title}`); menu.textContent = '···'; menu.disabled = !canEdit; menu.addEventListener('click', () => openEditTask(task, project));topActions.append(menu);
+  const edit = document.createElement('button');edit.type='button';edit.className='icon-button task-edit';edit.textContent='✎';edit.title='Edit assignment';edit.setAttribute('aria-label',`Edit ${task.title}`);edit.hidden=!canEdit;edit.addEventListener('click',()=>openEditTask(task,project));
+  const drag = document.createElement('button');drag.type='button';drag.className='icon-button task-drag';drag.textContent='⠿';drag.title='Drag to move';drag.setAttribute('aria-label',`Drag ${task.title} to another status`);drag.hidden=!canEdit;drag.draggable=canEdit;drag.addEventListener('dragstart',event=>{event.dataTransfer.setData('text/plain',String(task.id));event.dataTransfer.effectAllowed='move';});
+  topActions.append(edit,drag);
   titleLine.append(title, topActions);
   const context = document.createElement('div'); context.className = 'task-context';
   if (task.project_name && !project) context.append(makeTag(task.project_name, 'project-tag'));
@@ -369,23 +355,19 @@ function makeTaskCard(task, project) {
   const deadline = document.createElement('p'); deadline.className = `task-deadline ${isOverdue(task) ? 'overdue' : ''}`;
   deadline.textContent = `${isOverdue(task) ? 'Overdue · ' : 'Due · '}${formatDate(task.due_date, { month: 'short', day: 'numeric', year: 'numeric' })}`;
   if(isOverdue(task)){const actual=document.createElement('small');actual.className='underlying-status';actual.textContent=statusNames[task.status];deadline.append(' · ',actual);}
-  const assignees = document.createElement('p'); assignees.className = 'task-assignees';
-  assignees.textContent = task.assignees?.length ? task.assignees.map((person) => person.name).join(', ') : (project ? 'No teammates assigned' : 'Just you');
-  if (task.started_at) {
-    const start = timestamp(task.started_at); const end = timestamp(task.completed_at);
-    if (start) { const duration = document.createElement('small'); duration.className='work-duration'; const hours=Math.max(0,Math.round((end-start)/3600000)); duration.textContent = end ? `Work time · ${hours < 24 ? `${hours} hours` : `${Math.round(hours/24)} days`}` : `Started · ${formatTimestamp(task.started_at)}`; assignees.append(document.createElement('br'),duration); }
-  }
+  const description=document.createElement('p');description.className='task-description-preview';description.textContent=task.description||'';description.hidden=!task.description;
+  const assignees=document.createElement('div');assignees.className='task-assignees';(task.assignees||[]).slice(0,4).forEach(person=>{const avatar=document.createElement('span');avatar.className='avatar task-assignee-avatar';setAvatar(avatar,person);avatar.title=person.name;avatar.setAttribute('aria-label',person.name);assignees.append(avatar);});if(!(task.assignees||[]).length){const me=document.createElement('span');me.textContent=project?'Unassigned':'You';assignees.append(me);}
   const actions = document.createElement('div'); actions.className = 'task-card-actions';
-  const moveButton=document.createElement('button');moveButton.type='button';moveButton.className='task-move-trigger';moveButton.textContent='Move';moveButton.setAttribute('aria-label',`Move ${task.title}`);moveButton.hidden=!canEdit;
+  const moveButton=document.createElement('button');moveButton.type='button';moveButton.className='task-move-trigger icon-button';moveButton.textContent='↔';moveButton.title='Move assignment';moveButton.setAttribute('aria-label',`Move ${task.title}`);moveButton.hidden=!canEdit;
   const moveMenu=document.createElement('div');moveMenu.className='task-move-popover';moveMenu.setAttribute('popover','auto');moveMenu.setAttribute('aria-label',`Move ${task.title} to a status`);
   Object.entries(statusNames).filter(([value])=>value!=='overdue').forEach(([value,name])=>{if(value===task.status)return;const option=document.createElement('button');option.type='button';option.textContent=`Move to ${name}`;option.addEventListener('click',()=>{moveMenu.hidePopover();moveButton.setAttribute('aria-expanded','false');changeTaskStatus(task,value,project);});moveMenu.append(option);});
   moveButton.setAttribute('aria-haspopup','menu');moveButton.setAttribute('aria-expanded','false');
   moveButton.addEventListener('click',()=>{if(moveMenu.matches(':popover-open')){moveMenu.hidePopover();moveButton.setAttribute('aria-expanded','false');return;}moveMenu.showPopover();moveButton.setAttribute('aria-expanded','true');const rect=moveButton.getBoundingClientRect();const width=moveMenu.offsetWidth;const height=moveMenu.offsetHeight;const left=Math.max(8,Math.min(rect.right-width,window.innerWidth-width-8));const top=rect.bottom+height+8<=window.innerHeight?rect.bottom+6:Math.max(8,rect.top-height-6);moveMenu.style.left=`${left}px`;moveMenu.style.top=`${top}px`;});
   moveMenu.addEventListener('toggle',event=>{if(event.newState==='closed')moveButton.setAttribute('aria-expanded','false');});
-  const comment = document.createElement('button'); comment.className = 'text-button'; comment.textContent = 'Comments'; comment.addEventListener('click', () => toggleComments(card, task, project));
-  const historyButton=document.createElement('button');historyButton.className='text-button';historyButton.textContent='History';historyButton.addEventListener('click',()=>toggleTaskHistory(card,task));
+  const comment = document.createElement('button'); comment.type='button';comment.className='icon-button';comment.textContent='▱';comment.title='Comments';comment.setAttribute('aria-label',`Comments for ${task.title}`);comment.addEventListener('click', () => toggleComments(card, task, project));
+  const historyButton=document.createElement('button');historyButton.type='button';historyButton.className='icon-button';historyButton.textContent='◷';historyButton.title='History';historyButton.setAttribute('aria-label',`History for ${task.title}`);historyButton.addEventListener('click',()=>toggleTaskHistory(card,task));
   actions.append(moveButton, moveMenu, comment, historyButton);
-  card.append(titleLine, context, deadline, assignees, actions);
+  card.append(titleLine, context, description, deadline, assignees, actions);
   return card;
 }
 
@@ -396,6 +378,17 @@ async function toggleTaskHistory(card, task) {
 }
 
 function makeTag(text, className) { const tag = document.createElement('span'); tag.className = className; tag.textContent = text; return tag; }
+
+async function openTaskDetails(task, project) {
+  let dialog=$('#task-details-dialog');
+  if(!dialog){dialog=document.createElement('dialog');dialog.id='task-details-dialog';dialog.className='task-details-dialog';dialog.innerHTML='<section class="task-details-panel"><div class="dialog-head"><div><h2></h2></div><button type="button" class="icon-button" aria-label="Close">×</button></div><div class="task-details-body"></div></section>';document.body.append(dialog);$('.icon-button',dialog).addEventListener('click',()=>dialog.close());}
+  const panel=$('.task-details-panel',dialog);$('h2',panel).textContent=task.title;const body=$('.task-details-body',panel);body.replaceChildren();
+  const info=document.createElement('div');info.className='task-detail-meta';info.append(makeTag(`${statusNames[task.status]}${isOverdue(task)?' · Overdue':''}`,'status-tag'),makeTag(`${task.priority} priority`,`priority-tag ${task.priority}`),makeTag(`Due ${formatDate(task.due_date,{month:'short',day:'numeric',year:'numeric'})}`,'date-tag'));body.append(info);
+  if(task.description){const description=document.createElement('p');description.className='task-detail-description';description.textContent=task.description;body.append(description);}
+  const assignees=document.createElement('div');assignees.className='task-detail-assignees';(task.assignees||[]).forEach(person=>{const item=document.createElement('span');item.className='task-detail-person';const avatar=document.createElement('span');avatar.className='avatar task-assignee-avatar';setAvatar(avatar,person);const name=document.createElement('span');name.textContent=person.name;item.append(avatar,name);assignees.append(item);});if(assignees.childElementCount)body.append(assignees);
+  const history=document.createElement('section');history.className='task-detail-section';const historyTitle=document.createElement('h3');historyTitle.textContent='History';history.append(historyTitle);const comments=document.createElement('section');comments.className='task-detail-section';const commentsTitle=document.createElement('h3');commentsTitle.textContent='Comments';comments.append(commentsTitle);body.append(history,comments);dialog.showModal();
+  try{const [rows,notes]=await Promise.all([api(`/api/tasks/${task.id}/history`),api(`/api/tasks/${task.id}/comments`)]);if(!rows.length){const empty=document.createElement('p');empty.textContent='No history';history.append(empty);}rows.forEach(row=>{const line=document.createElement('p');line.textContent=`${row.changed_by||'A teammate'} · ${statusNames[row.from_status]||'Created'} → ${statusNames[row.to_status]||row.to_status} · ${formatTimestamp(row.changed_at)}`;history.append(line);});if(!notes.length){const empty=document.createElement('p');empty.textContent='No comments';comments.append(empty);}notes.forEach(note=>{const item=document.createElement('p');item.textContent=`${note.name} · ${formatTimestamp(note.created_at)}: ${note.body}`;comments.append(item);});}catch(error){const err=document.createElement('p');err.textContent=error.message;body.append(err);}
+}
 
 async function changeTaskStatus(task, status, project) {
   const previous = { status: task.status, started_at: task.started_at, completed_at: task.completed_at };
@@ -449,9 +442,8 @@ function populateAssignees(project, selected) {
   const select = $('#assignees'); select.replaceChildren();
   if (!project) return;
   project.members.forEach((member) => {
-    const option = new Option(member.name, member.id, false, selected.includes(member.id));
-    if (member.id === user.id) option.disabled = true;
-    select.add(option);
+    const label=document.createElement('label');label.className='assignee-option';const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.value=member.id;checkbox.checked=selected.includes(member.id);checkbox.disabled=member.id===user.id;checkbox.name='assignee_ids';
+    const avatar=document.createElement('span');avatar.className='avatar small-avatar';setAvatar(avatar,member);const name=document.createElement('span');name.className='assignee-name';name.textContent=member.name+(member.id===user.id?' · You':'');label.append(checkbox,avatar,name);select.append(label);
   });
 }
 
@@ -488,8 +480,8 @@ taskForm.addEventListener('submit', async (event) => {
   if ($('#assignment-scope').value === 'group' && !id) {
     if (!projectId) { $('#form-error').textContent='Choose a study group.'; return; }
     payload.project_id = Number(projectId);
-    payload.assignee_ids = $$('#assignees option:checked').map((option) => Number(option.value));
   }
+  if(projectId) payload.assignee_ids = $$('#assignees input:checked').map((input) => Number(input.value));
   $('#form-error').textContent = '';
   try {
     await api(id ? `/api/tasks/${id}` : '/api/tasks', { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
@@ -533,7 +525,7 @@ async function renderCommentPanel(panel, task, project) {
   if(!comments.length){const empty=document.createElement('p');empty.className='comment-empty';empty.textContent='No comments yet.';stream.append(empty);}
   comments.forEach(comment=>{
     const row=document.createElement('article');row.className='comment-item';const copy=document.createElement('div');copy.className='comment-copy';const meta=document.createElement('div');meta.className='comment-meta';const by=document.createElement('strong');by.textContent=comment.name;const when=document.createElement('small');when.textContent=`${formatTimestamp(comment.created_at)}${comment.edited_at?' · edited':''}`;meta.append(by,when);const body=document.createElement('p');body.textContent=comment.body;copy.append(meta,body);row.append(copy);
-    if(Number(comment.user_id)===Number(user?.id)&&project?.role!=='viewer'&&!project?.legacy_readonly){const actions=document.createElement('details');actions.className='comment-menu';const trigger=document.createElement('summary');trigger.textContent='···';trigger.setAttribute('aria-label','Comment actions');const menu=document.createElement('div');menu.className='comment-menu-items';const edit=document.createElement('button');edit.type='button';edit.textContent='Edit';edit.addEventListener('click',async()=>{actions.open=false;const input=document.createElement('textarea');input.className='comment-edit-input';input.value=comment.body;input.maxLength=2000;const save=document.createElement('button');save.type='button';save.className='secondary-button';save.textContent='Save';const cancel=document.createElement('button');cancel.type='button';cancel.className='text-button';cancel.textContent='Cancel';copy.replaceChildren(meta,input);row.append(save,cancel);cancel.addEventListener('click',()=>renderCommentPanel(panel,task,project).catch(error=>showMessage(error.message)));save.addEventListener('click',async()=>{try{await patch(`/api/tasks/${task.id}/comments/${comment.id}`,{body:input.value});await renderCommentPanel(panel,task,project);}catch(error){showMessage(error.message);}});});const remove=document.createElement('button');remove.type='button';remove.textContent='Delete';remove.addEventListener('click',async()=>{actions.open=false;if(!confirm('Delete this comment?'))return;try{await api(`/api/tasks/${task.id}/comments/${comment.id}`,{method:'DELETE'});await renderCommentPanel(panel,task,project);}catch(error){showMessage(error.message);}});menu.append(edit,remove);actions.append(trigger,menu);row.append(actions);}
+    if(Number(comment.user_id)===Number(user?.id)&&project?.role!=='viewer'&&!project?.legacy_readonly){const actions=document.createElement('details');actions.className='comment-menu';const trigger=document.createElement('summary');trigger.textContent='···';trigger.setAttribute('aria-label','Comment actions');const menu=document.createElement('div');menu.className='comment-menu-items';const edit=document.createElement('button');edit.type='button';edit.textContent='✎ Edit';edit.addEventListener('click',async()=>{actions.open=false;const input=document.createElement('textarea');input.className='comment-edit-input';input.value=comment.body;input.maxLength=2000;const save=document.createElement('button');save.type='button';save.className='secondary-button';save.textContent='Save';const cancel=document.createElement('button');cancel.type='button';cancel.className='text-button';cancel.textContent='Cancel';copy.replaceChildren(meta,input);row.append(save,cancel);cancel.addEventListener('click',()=>renderCommentPanel(panel,task,project).catch(error=>showMessage(error.message)));save.addEventListener('click',async()=>{try{await patch(`/api/tasks/${task.id}/comments/${comment.id}`,{body:input.value});await renderCommentPanel(panel,task,project);}catch(error){showMessage(error.message);}});});const remove=document.createElement('button');remove.type='button';remove.textContent='⌫ Delete';remove.addEventListener('click',async()=>{actions.open=false;if(!confirm('Delete this comment?'))return;try{await api(`/api/tasks/${task.id}/comments/${comment.id}`,{method:'DELETE'});await renderCommentPanel(panel,task,project);}catch(error){showMessage(error.message);}});menu.append(edit,remove);actions.append(trigger,menu);row.append(actions);}
     stream.append(row);
   });
   panel.append(stream);
@@ -552,13 +544,14 @@ function renderProjects() {
     const card = document.createElement('button'); card.className = 'project-card';
     const icon = document.createElement('span'); icon.className = `project-icon group-avatar-${project.avatar || 'violet'}`; icon.setAttribute('aria-hidden','true'); icon.textContent = ({violet:'✦',ocean:'≈',mint:'❋',coral:'✿',sun:'☼'})[project.avatar] || '✦';
     const title = document.createElement('strong'); title.textContent = project.name;
-    const description = document.createElement('p'); description.className='project-card-description'; description.textContent = project.description || 'A shared space to plan assignments and learn together.';
+    const description = document.createElement('p'); description.className='project-card-description'; description.textContent = project.description || '';
     const metrics = document.createElement('span'); metrics.className = 'project-metrics';
     const members = document.createElement('span'); members.className = 'project-metric'; const memberIcon=document.createElement('b'); memberIcon.setAttribute('aria-hidden','true'); memberIcon.textContent='♙';
     const memberCount = document.createElement('strong'); memberCount.textContent = project.member_count; const memberLabel = document.createElement('small'); memberLabel.textContent = 'members'; members.append(memberIcon,memberCount,memberLabel);
     const assignments = document.createElement('span'); assignments.className = 'project-metric'; const taskIcon=document.createElement('b'); taskIcon.setAttribute('aria-hidden','true'); taskIcon.textContent='▤';
     const taskCount = document.createElement('strong'); taskCount.textContent = project.task_count; const taskLabel = document.createElement('small'); taskLabel.textContent = 'assignments'; assignments.append(taskIcon,taskCount,taskLabel);
-    metrics.append(members,assignments);
+    const milestones=document.createElement('span');milestones.className='project-metric';const milestoneIcon=document.createElement('b');milestoneIcon.setAttribute('aria-hidden','true');milestoneIcon.textContent='◇';const milestoneCount=document.createElement('strong');milestoneCount.textContent=project.milestone_count??0;const milestoneLabel=document.createElement('small');milestoneLabel.textContent='milestones';milestones.append(milestoneIcon,milestoneCount,milestoneLabel);
+    metrics.append(members,assignments,milestones);
     card.append(icon, title, description, metrics); card.addEventListener('click', () => { location.hash = `#/groups/${project.id}`; }); grid.append(card);
   });
 }
@@ -587,6 +580,11 @@ async function loadJoinRequests(projectId) {
   } catch(error){box.textContent=error.message;}
 }
 
+function showGroupDescription(name,text) {
+  let dialog=$('#group-description-dialog');if(!dialog){dialog=document.createElement('dialog');dialog.id='group-description-dialog';dialog.className='group-description-dialog';dialog.innerHTML='<section class="group-description-panel"><div class="dialog-head"><h2></h2><button type="button" class="icon-button" aria-label="Close">×</button></div><p></p></section>';document.body.append(dialog);$('.icon-button',dialog).addEventListener('click',()=>dialog.close());}
+  $('h2',dialog).textContent=name;$('p',dialog).textContent=text||'';dialog.showModal();
+}
+
 $('#copy-join-code').addEventListener('click', async()=>{const code=$('#group-join-code').textContent;try{await navigator.clipboard.writeText(code);$('#copy-join-code').textContent='Copied';setTimeout(()=>$('#copy-join-code').textContent='Copy code',1400);}catch{const range=document.createRange();range.selectNodeContents($('#group-join-code'));getSelection().removeAllRanges();getSelection().addRange(range);}});
 $('#rotate-join-code').addEventListener('click', async()=>{if(!activeProject||!confirm('Regenerate this code? The old code stops working immediately.'))return;try{const result=await post(`/api/projects/${activeProject.id}/join-code/rotate`,{});activeProject.join_code=result.code;$('#group-join-code').textContent=result.code;await loadProjects();}catch(error){showMessage(error.message);}});
 
@@ -594,13 +592,12 @@ async function renderProject(projectId) {
   activeProject = await api(`/api/projects/${projectId}`);
   const pane = $('#project-detail'); pane.hidden = false; pane.replaceChildren();
   const head = document.createElement('div'); head.className = 'project-detail-head';
-  const back = document.createElement('a'); back.className = 'text-button back-link'; back.href = '#/groups'; back.textContent = '← All study groups';
   const hero = document.createElement('section'); hero.className='group-hero';
   const heroMain=document.createElement('div');heroMain.className='group-hero-main';
   const heroAvatar=document.createElement('span');heroAvatar.className=`group-hero-avatar group-avatar-${activeProject.avatar||'violet'}`;heroAvatar.setAttribute('aria-hidden','true');heroAvatar.textContent=({violet:'✦',ocean:'≈',mint:'❋',coral:'✿',sun:'☼'})[activeProject.avatar]||'✦';
   const titlebox = document.createElement('div');titlebox.className='group-hero-copy'; const title = document.createElement('h2'); title.textContent = activeProject.name;
-  const description = document.createElement('p');description.className='group-description';description.textContent=activeProject.description||'A shared space to plan assignments and learn together.';
-  const descriptionToggle=document.createElement('button');descriptionToggle.type='button';descriptionToggle.className='text-button group-description-toggle';descriptionToggle.textContent='Read more';descriptionToggle.hidden=(activeProject.description||'').length<190;descriptionToggle.setAttribute('aria-expanded','false');descriptionToggle.addEventListener('click',()=>{const expanded=description.classList.toggle('is-expanded');descriptionToggle.textContent=expanded?'Show less':'Read more';descriptionToggle.setAttribute('aria-expanded',String(expanded));});
+  const description = document.createElement('p');description.className='group-description';description.textContent=activeProject.description||'';
+  const descriptionToggle=document.createElement('button');descriptionToggle.type='button';descriptionToggle.className='text-button group-description-toggle';descriptionToggle.textContent='Read more';descriptionToggle.hidden=!(activeProject.description||'').trim();descriptionToggle.setAttribute('aria-haspopup','dialog');descriptionToggle.addEventListener('click',()=>showGroupDescription(activeProject.name,activeProject.description));
   const stats=document.createElement('div');stats.className='group-hero-stats';
   const memberStat=document.createElement('span');memberStat.className='group-stat';memberStat.innerHTML='<b aria-hidden="true">♙</b><strong></strong><span>members</span>';memberStat.querySelector('strong').textContent=String(activeProject.members.length);
   const assignmentStat=document.createElement('span');assignmentStat.className='group-stat';assignmentStat.innerHTML='<b aria-hidden="true">▤</b><strong id="group-assignments-count">…</strong><span>assignments</span>';
@@ -608,10 +605,11 @@ async function renderProject(projectId) {
   stats.append(memberStat,assignmentStat,milestoneStat);titlebox.append(title,description,descriptionToggle,stats);heroMain.append(heroAvatar,titlebox);
   const actions = document.createElement('div'); actions.className = 'page-actions';
   const addTask = document.createElement('button'); addTask.className = 'primary-button'; addTask.textContent = '＋ Assignment'; addTask.hidden = activeProject.role === 'viewer'; addTask.addEventListener('click', () => openNewTask(activeProject));
-  const editGroup=document.createElement('button');editGroup.className='secondary-button';editGroup.textContent='Edit group';editGroup.hidden=!['owner','admin'].includes(activeProject.role);editGroup.addEventListener('click',()=>{const form=$('#project-form');form.reset();form.dataset.id=String(activeProject.id);form.elements.name.value=activeProject.name;form.elements.description.value=activeProject.description||'';form.elements.avatar.value=activeProject.avatar||'violet';$('#project-dialog-title').textContent='Edit group';$('#save-group').textContent='Save changes';$('.dialog-danger-zone').hidden=activeProject.role!=='owner';$('#project-error').textContent='';$('#project-dialog').showModal();});
-  const invite = document.createElement('button'); invite.className = 'secondary-button'; invite.textContent = 'Invite members'; invite.hidden = !['owner','admin'].includes(activeProject.role); invite.addEventListener('click', async () => { $('#group-join-code').textContent = activeProject.join_code; await loadJoinRequests(activeProject.id); $('#invite-dialog').showModal(); });
+  const editGroup=document.createElement('button');editGroup.className='secondary-button';editGroup.textContent='✎ Edit group';editGroup.hidden=!['owner','admin'].includes(activeProject.role);editGroup.addEventListener('click',()=>{const form=$('#project-form');form.reset();form.dataset.id=String(activeProject.id);form.elements.name.value=activeProject.name;form.elements.description.value=activeProject.description||'';form.elements.avatar.value=activeProject.avatar||'violet';$('#project-dialog-title').textContent='Edit group';$('#save-group').textContent='Save changes';$('.dialog-danger-zone').hidden=activeProject.role!=='owner';$('#project-error').textContent='';$('#project-dialog').showModal();});
+  const invite = document.createElement('button'); invite.className = 'secondary-button'; invite.textContent = '♙+ Invite'; invite.title='Share a group join code';invite.hidden = !['owner','admin'].includes(activeProject.role); invite.addEventListener('click', async () => { $('#group-join-code').textContent = activeProject.join_code; await loadJoinRequests(activeProject.id); $('#invite-dialog').showModal(); });
   const openChat = document.createElement('a'); openChat.className = 'secondary-button'; openChat.href = `#/messages?group=${activeProject.id}`; openChat.textContent = 'Open group chat';
-  actions.append(addTask, editGroup, invite, openChat);hero.append(heroMain,actions);head.append(back,hero);pane.append(head);
+  const leave=document.createElement('button');leave.type='button';leave.className='secondary-button leave-group';leave.textContent='↪ Leave group';leave.addEventListener('click',async()=>{const owner=activeProject.role==='owner';if(owner&&activeProject.members.length>1){showMessage('Transfer ownership before leaving this group.');return;}const prompt=owner?`Delete “${activeProject.name}”? As the only member, leaving will delete this group and its shared work.`:`Leave “${activeProject.name}”?`;if(!confirm(prompt))return;try{await api(`/api/projects/${activeProject.id}/leave`,{method:'POST'});activeProject=null;location.hash='#/groups';await loadProjects();}catch(error){showMessage(error.message);}});
+  actions.append(addTask, editGroup, invite, openChat,leave);hero.append(heroMain,actions);head.append(hero);pane.append(head);
   const layout = document.createElement('div'); layout.className = 'group-workspace-grid';
   const plan = document.createElement('section'); plan.className = 'group-plan';
   const taskHeading = document.createElement('div'); taskHeading.className = 'subsection-heading'; const taskTitle = document.createElement('h3'); taskTitle.textContent = 'Shared assignments'; taskHeading.append(taskTitle); plan.append(taskHeading);
@@ -653,13 +651,12 @@ async function loadMilestones(projectId) {
   const list = $('#milestone-list'); if (!list) return;
   list.replaceChildren();
   const milestoneCount=$('#group-milestones-count');if(milestoneCount&&activeProject&&Number(activeProject.id)===Number(projectId))milestoneCount.textContent=String(milestones.length);
-  if (!milestones.length) { const empty = document.createElement('p'); empty.className = 'subtle-empty'; empty.textContent = 'Add a checkpoint to keep your project on track.'; list.append(empty); return; }
-  milestones.forEach((milestone) => { const row = document.createElement('div'); row.className = `milestone-row ${milestone.status}`; const toggle = document.createElement('button'); toggle.className = 'milestone-toggle'; toggle.textContent = milestone.status === 'done' ? '✓' : '○'; toggle.setAttribute('aria-label', `${milestone.status === 'done' ? 'Reopen' : 'Complete'} ${milestone.title}`); toggle.disabled = activeProject.role === 'viewer'; toggle.addEventListener('click', async () => { try { await patch(`/api/projects/${projectId}/milestones/${milestone.id}`, { status: milestone.status === 'done' ? 'open' : 'done' }); await loadMilestones(projectId); } catch (error) { showMessage(error.message); } }); const text = document.createElement('span'); text.textContent = milestone.title; const due = document.createElement('small'); due.textContent = formatDate(milestone.due_date); row.append(toggle, text, due); list.append(row); });
+  milestones.forEach((milestone) => { const row = document.createElement('div'); row.className = `milestone-row ${milestone.status}`; const toggle = document.createElement('button'); toggle.className = 'milestone-toggle'; toggle.textContent = milestone.status === 'done' ? '✓' : ''; toggle.setAttribute('role','checkbox');toggle.setAttribute('aria-checked',String(milestone.status==='done'));toggle.setAttribute('aria-label', `${milestone.status === 'done' ? 'Reopen' : 'Complete'} ${milestone.title}`); toggle.disabled = activeProject.role === 'viewer'; toggle.addEventListener('click', async () => { try { await patch(`/api/projects/${projectId}/milestones/${milestone.id}`, { status: milestone.status === 'done' ? 'open' : 'done' }); await loadMilestones(projectId); } catch (error) { showMessage(error.message); } }); const text = document.createElement('span'); text.textContent = milestone.title; const due = document.createElement('small'); due.textContent = milestone.due_date?formatDate(milestone.due_date):''; row.append(toggle, text, due); list.append(row); });
 }
 
 $('#milestone-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  try { await post(`/api/projects/${activeProject.id}/milestones`, Object.fromEntries(new FormData(event.currentTarget))); $('#milestone-dialog').close(); await loadMilestones(activeProject.id); }
+  try { const payload=Object.fromEntries(new FormData(event.currentTarget));if(!payload.due_date)delete payload.due_date;await post(`/api/projects/${activeProject.id}/milestones`,payload); $('#milestone-dialog').close(); await loadMilestones(activeProject.id); }
   catch (error) { $('#milestone-error').textContent = error.message; }
 });
 
@@ -690,11 +687,11 @@ function appendChatMessage(stream, message, mine) {
   const box=document.createElement('div');box.className='message-content';const meta=document.createElement('div');meta.className='message-meta';meta.textContent=`${message.name||message.sender_name||'Classmate'} · ${time?time.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}):'Time unavailable'}${message.edited_at?' · edited':''}`;
   const bubble=document.createElement('p');bubble.className='message-bubble';bubble.textContent=message.deleted_at?'Message deleted':message.body||'';if(message.deleted_at)bubble.classList.add('deleted-message');box.append(meta,bubble);
   if((activeGroupChatId||activeConversation)&&!message.deleted_at){const details=document.createElement('details');details.className='message-menu';const summary=document.createElement('summary');summary.textContent='···';summary.setAttribute('aria-label','Message actions');const menu=document.createElement('div');menu.className='message-menu-items';const add=(label,fn)=>{const b=document.createElement('button');b.type='button';b.textContent=label;b.addEventListener('click',async()=>{details.open=false;await fn();});menu.append(b);};
-    add('Copy message',async()=>{try{await navigator.clipboard.writeText(message.body);}catch{showMessage('Copy is unavailable in this browser.');}});
-    if(mine)add('Edit message',async()=>{const next=prompt('Edit message',message.body);if(next===null)return;try{if(activeGroupChatId){await patch(`/api/projects/${activeGroupChatId}/messages/${message.id}`,{body:next.trim()});await refreshGroupThread();}else{await patch(`/api/direct/conversations/${activeConversation.id}/messages/${message.id}`,{body:next.trim()});lastDirectMessageId=0;await loadDirectMessages();}}catch(error){showMessage(error.message);}});
-    if(mine)add('Delete message',async()=>{if(!confirm('Delete this message? It will remain as a deleted marker.'))return;try{if(activeGroupChatId){await api(`/api/projects/${activeGroupChatId}/messages/${message.id}`,{method:'DELETE'});await refreshGroupThread();}else{await api(`/api/direct/conversations/${activeConversation.id}/messages/${message.id}`,{method:'DELETE'});lastDirectMessageId=0;await loadDirectMessages();}}catch(error){showMessage(error.message);}});
-    if(activeGroupChatId && projects.find(p=>p.id===activeGroupChatId)?.role==='owner')add(message.pinned_at?'Unpin message':'Pin message',async()=>{try{await api(`/api/projects/${activeGroupChatId}/messages/${message.id}/pin`,{method:message.pinned_at?'DELETE':'POST'});await refreshGroupThread();}catch(error){showMessage(error.message);}});
-    if(activeConversation)add(message.pinned_at?'Unpin message':'Pin message',async()=>{try{await api(`/api/direct/conversations/${activeConversation.id}/messages/${message.id}/pin`,{method:message.pinned_at?'DELETE':'POST'});await loadDirectMessages(true);}catch(error){showMessage(error.message);}});
+    add('▢ Copy message',async()=>{try{await navigator.clipboard.writeText(message.body);}catch{showMessage('Copy is unavailable in this browser.');}});
+    if(mine)add('✎ Edit message',async()=>{const next=prompt('Edit message',message.body);if(next===null)return;try{if(activeGroupChatId){await patch(`/api/projects/${activeGroupChatId}/messages/${message.id}`,{body:next.trim()});await refreshGroupThread();}else{await patch(`/api/direct/conversations/${activeConversation.id}/messages/${message.id}`,{body:next.trim()});lastDirectMessageId=0;await loadDirectMessages();}}catch(error){showMessage(error.message);}});
+    if(mine)add('⌫ Delete message',async()=>{if(!confirm('Delete this message? It will remain as a deleted marker.'))return;try{if(activeGroupChatId){await api(`/api/projects/${activeGroupChatId}/messages/${message.id}`,{method:'DELETE'});await refreshGroupThread();}else{await api(`/api/direct/conversations/${activeConversation.id}/messages/${message.id}`,{method:'DELETE'});lastDirectMessageId=0;await loadDirectMessages();}}catch(error){showMessage(error.message);}});
+    if(activeGroupChatId && projects.find(p=>p.id===activeGroupChatId)?.role==='owner')add(message.pinned_at?'◇ Unpin message':'◇ Pin message',async()=>{try{await api(`/api/projects/${activeGroupChatId}/messages/${message.id}/pin`,{method:message.pinned_at?'DELETE':'POST'});await refreshGroupThread();}catch(error){showMessage(error.message);}});
+    if(activeConversation)add(message.pinned_at?'◇ Unpin message':'◇ Pin message',async()=>{try{await api(`/api/direct/conversations/${activeConversation.id}/messages/${message.id}/pin`,{method:message.pinned_at?'DELETE':'POST'});await loadDirectMessages(true);}catch(error){showMessage(error.message);}});
     details.append(summary,menu);box.append(details);
   }
   if(message.pinned_at){const marker=document.createElement('span');marker.className='pinned-marker';marker.textContent='Pinned';box.append(marker);}
@@ -704,7 +701,7 @@ function appendChatMessage(stream, message, mine) {
 async function showPinnedMessages(projectId) {
   let dialog=$('#pinned-dialog');if(!dialog){dialog=document.createElement('dialog');dialog.id='pinned-dialog';dialog.innerHTML='<section class="pinned-panel"><div class="dialog-head"><h2>Pinned messages</h2><button class="icon-button" aria-label="Close">×</button></div><div id="pinned-list" class="pinned-list"></div></section>';document.body.append(dialog);$('.icon-button',dialog).addEventListener('click',()=>dialog.close());}
   const box=$('#pinned-list');box.replaceChildren();const pins=await api(`/api/projects/${projectId}/pinned-messages`);if(!pins.length)box.textContent='No pinned messages yet.';
-  pins.forEach(item=>{const row=document.createElement('article');row.className='pinned-item';const body=document.createElement('p');body.textContent=item.deleted_at?'Message deleted':item.body;const meta=document.createElement('small');meta.textContent=`${item.name} · ${formatTimestamp(item.created_at)}`;const jump=document.createElement('button');jump.className='text-button';jump.textContent='Jump to message';jump.addEventListener('click',async()=>{try{let target=$(`[data-message-id="${item.id}"]`);if(!target){const message=await api(`/api/projects/${projectId}/messages/${item.id}`);appendChatMessage($('#direct-stream'),message,message.user_id===user.id);target=$(`[data-message-id="${item.id}"]`);}target?.scrollIntoView({behavior:'smooth',block:'center'});}catch(error){showMessage(error.message);}});row.append(body,meta,jump);if(projects.find(p=>p.id===projectId)?.role==='owner'){const unpin=document.createElement('button');unpin.className='text-button';unpin.textContent='Unpin';unpin.addEventListener('click',async()=>{await api(`/api/projects/${projectId}/messages/${item.id}/pin`,{method:'DELETE'});await showPinnedMessages(projectId);});row.append(unpin);}box.append(row);});dialog.showModal();
+  pins.forEach(item=>{const row=document.createElement('article');row.className='pinned-item';const body=document.createElement('p');body.textContent=item.deleted_at?'Message deleted':item.body;const meta=document.createElement('small');meta.textContent=`${item.name} · ${formatTimestamp(item.created_at)}`;const jump=document.createElement('button');jump.className='text-button';jump.textContent='↗ Jump to message';jump.addEventListener('click',async()=>{try{let target=$(`[data-message-id="${item.id}"]`);if(!target){const message=await api(`/api/projects/${projectId}/messages/${item.id}`);appendChatMessage($('#direct-stream'),message,message.user_id===user.id);target=$(`[data-message-id="${item.id}"]`);}target?.scrollIntoView({behavior:'smooth',block:'center'});}catch(error){showMessage(error.message);}});row.append(body,meta,jump);if(projects.find(p=>p.id===projectId)?.role==='owner'){const unpin=document.createElement('button');unpin.className='text-button';unpin.textContent='◇ Unpin';unpin.addEventListener('click',async()=>{await api(`/api/projects/${projectId}/messages/${item.id}/pin`,{method:'DELETE'});await showPinnedMessages(projectId);});row.append(unpin);}box.append(row);});dialog.showModal();
 }
 
 async function showDirectPinnedMessages(conversationId) {
@@ -712,24 +709,9 @@ async function showDirectPinnedMessages(conversationId) {
   const box=$('#pinned-list');box.replaceChildren();
   const pins=await api(`/api/direct/conversations/${conversationId}/pinned-messages`);
   if(!pins.length)box.textContent='No pinned messages yet.';
-  pins.forEach(item=>{const row=document.createElement('article');row.className='pinned-item';const body=document.createElement('p');body.textContent=item.deleted_at?'Message deleted':item.body;const meta=document.createElement('small');meta.textContent=`${item.sender_name} · ${formatTimestamp(item.created_at)}`;const jump=document.createElement('button');jump.className='text-button';jump.textContent='Jump to message';jump.addEventListener('click',async()=>{try{let target=$(`[data-message-id="${item.id}"]`);if(!target){const message=await api(`/api/direct/conversations/${conversationId}/messages/${item.id}`);appendChatMessage($('#direct-stream'),message,message.sender_id===user.id);target=$(`[data-message-id="${item.id}"]`);}target?.scrollIntoView({behavior:'smooth',block:'center'});dialog.close();}catch(error){showMessage(error.message);}});const unpin=document.createElement('button');unpin.className='text-button';unpin.textContent='Unpin';unpin.addEventListener('click',async()=>{await api(`/api/direct/conversations/${conversationId}/messages/${item.id}/pin`,{method:'DELETE'});await showDirectPinnedMessages(conversationId);});row.append(body,meta,jump,unpin);box.append(row);});
+  pins.forEach(item=>{const row=document.createElement('article');row.className='pinned-item';const body=document.createElement('p');body.textContent=item.deleted_at?'Message deleted':item.body;const meta=document.createElement('small');meta.textContent=`${item.sender_name} · ${formatTimestamp(item.created_at)}`;const jump=document.createElement('button');jump.className='text-button';jump.textContent='↗ Jump to message';jump.addEventListener('click',async()=>{try{let target=$(`[data-message-id="${item.id}"]`);if(!target){const message=await api(`/api/direct/conversations/${conversationId}/messages/${item.id}`);appendChatMessage($('#direct-stream'),message,message.sender_id===user.id);target=$(`[data-message-id="${item.id}"]`);}target?.scrollIntoView({behavior:'smooth',block:'center'});dialog.close();}catch(error){showMessage(error.message);}});const unpin=document.createElement('button');unpin.className='text-button';unpin.textContent='◇ Unpin';unpin.addEventListener('click',async()=>{await api(`/api/direct/conversations/${conversationId}/messages/${item.id}/pin`,{method:'DELETE'});await showDirectPinnedMessages(conversationId);});row.append(body,meta,jump,unpin);box.append(row);});
   dialog.showModal();
 }
-
-$('#invite-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  try {
-    const result = await post(`/api/projects/${activeProject.id}/invites`, Object.fromEntries(new FormData(event.currentTarget)));
-    const linkUrl = `${location.origin}${location.pathname}?invite=${encodeURIComponent(result.token)}#/groups`;
-    const box = $('#invite-result'); box.hidden = false; box.replaceChildren();
-    const detail = document.createElement('p'); detail.textContent = `Private to ${result.email} · ${result.role} access · expires ${formatDate(result.expires_at)}`;
-    const codeLabel = document.createElement('label'); codeLabel.className = 'field'; codeLabel.textContent = 'Invitation code'; const code = document.createElement('input'); code.readOnly = true; code.value = result.token; codeLabel.append(code);
-    const linkLabel = document.createElement('label'); linkLabel.className = 'field'; linkLabel.textContent = 'Invitation link'; const link = document.createElement('input'); link.readOnly = true; link.value = linkUrl; linkLabel.append(link);
-    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'secondary-button'; copy.textContent = 'Copy link'; copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(linkUrl); copy.textContent = 'Copied'; } catch { link.select(); document.execCommand('copy'); copy.textContent = 'Copied'; } });
-    const copyCode = document.createElement('button'); copyCode.type = 'button'; copyCode.className = 'secondary-button'; copyCode.textContent = 'Copy code'; copyCode.addEventListener('click', async () => { try { await navigator.clipboard.writeText(result.token); copyCode.textContent = 'Copied'; } catch { code.select(); document.execCommand('copy'); copyCode.textContent = 'Copied'; } });
-    box.append(detail, codeLabel, copyCode, linkLabel, copy); $('#invite-error').textContent = ''; $('#invite-submit').hidden = true;
-  } catch (error) { $('#invite-error').textContent = error.message; }
-});
 
 function renderCalendar() {
   const year = calendarCursor.getFullYear(); const month = calendarCursor.getMonth();

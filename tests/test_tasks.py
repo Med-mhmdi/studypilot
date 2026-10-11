@@ -21,6 +21,17 @@ def register(client, email="alex@example.edu", name="Alex Student"):
     return response.json()
 
 
+def join_group(owner, member, project):
+    code = owner.get(f"/api/projects/{project['id']}").json()["join_code"]
+    requested = member.post("/api/projects/join-requests", json={"code": code})
+    assert requested.status_code == 202, requested.text
+    pending = owner.get(f"/api/projects/{project['id']}/join-requests").json()
+    request = next(item for item in pending if item["user_id"] == member.get("/api/auth/me").json()["id"])
+    approved = owner.post(f"/api/projects/{project['id']}/join-requests/{request['id']}/approve")
+    assert approved.status_code == 200, approved.text
+    return approved.json()
+
+
 def test_task_lifecycle_and_filters(tmp_path, monkeypatch):
     with client_for(tmp_path / "planner.db", monkeypatch) as client:
         assert client.get("/health").json() == {"status": "ok"}
@@ -63,17 +74,15 @@ def test_validation_profile_and_private_personal_tasks(tmp_path, monkeypatch):
         assert alice.get("/api/tasks").status_code == 401
 
 
-def test_projects_invites_roles_chat_comments_and_notifications(tmp_path, monkeypatch):
+def test_projects_join_code_roles_chat_comments_and_notifications(tmp_path, monkeypatch):
     path = tmp_path / "planner.db"
     with client_for(path, monkeypatch) as owner:
         register(owner)
         project = owner.post("/api/projects", json={"name": "Biology lab", "description": "Shared lab report"}).json()
         assert project["role"] == "owner"
-        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email": "sam@example.edu", "role": "editor"})
-        assert invite.status_code == 201
         with TestClient(app) as teammate:
             register(teammate, "sam@example.edu", "Sam")
-            assert teammate.post(f"/api/invitations/{invite.json()['token']}/accept").status_code == 200
+            join_group(owner, teammate, project)
             task = owner.post("/api/tasks", json={"title": "Draft methods", "due_date": "2026-10-15", "project_id": project["id"], "assignee_ids": [2]})
             assert task.status_code == 201, task.text
             assert len(teammate.get(f"/api/tasks?project_id={project['id']}").json()) == 1
@@ -92,34 +101,31 @@ def test_projects_invites_roles_chat_comments_and_notifications(tmp_path, monkey
             assert owner.get(f"/api/projects/{project['id']}/messages").json()[0]["body"] == "I found a useful source."
             assert owner.get("/api/notifications").json()
             assert owner.post("/api/notifications/read").status_code == 204
-        # Invitation tokens are one-time; a stranger cannot read the shared project.
+        # A stranger cannot read the shared project and the retired email route is gone.
         with TestClient(app) as outsider:
             register(outsider, "lee@example.edu", "Lee")
-            assert outsider.post(f"/api/invitations/{invite.json()['token']}/accept").status_code == 404
+            assert outsider.post(f"/api/invitations/accept", json={"token":"x"*32}).status_code == 404
             assert outsider.get(f"/api/projects/{project['id']}").status_code == 404
 
 
-def test_viewer_cannot_write_and_invitation_is_email_bound(tmp_path, monkeypatch):
+def test_group_membership_uses_join_code_and_email_invites_are_removed(tmp_path, monkeypatch):
     with client_for(tmp_path / "planner.db", monkeypatch) as owner:
         register(owner)
         project = owner.post("/api/projects", json={"name": "Study group"}).json()
-        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email": "reader@example.edu", "role": "viewer"}).json()
         with TestClient(app) as reader:
             register(reader, "reader@example.edu", "Reader")
-            assert reader.post(f"/api/invitations/{invite['token']}/accept").status_code == 200
-            assert reader.post(f"/api/projects/{project['id']}/messages", json={"body": "hello"}).status_code == 403
-            assert reader.post("/api/tasks", json={"title": "Nope", "due_date": "2026-10-09", "project_id": project["id"]}).status_code == 403
+            join_group(owner, reader, project)
+            assert reader.post(f"/api/projects/{project['id']}/messages", json={"body": "hello"}).status_code == 201
+            assert owner.post(f"/api/projects/{project['id']}/invites", json={"email":"other@example.edu"}).status_code == 404
 
 
 def test_group_workspace_tasks_status_transitions_and_chat_timestamps(tmp_path, monkeypatch):
     with client_for(tmp_path / "planner.db", monkeypatch) as owner:
         register(owner)
         project = owner.post("/api/projects", json={"name": "Chemistry team"}).json()
-        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email": "jules@example.edu", "role": "editor"}).json()
         with TestClient(app) as teammate:
             register(teammate, "jules@example.edu", "Jules")
-            joined = teammate.post("/api/invitations/accept", json={"token": invite["token"]})
-            assert joined.status_code == 200
+            joined = join_group(owner, teammate, project)
             task = owner.post("/api/tasks", json={"title": "Finish data table", "due_date": "2026-10-15", "project_id": project["id"], "assignee_ids": [2]}).json()
             assert len(owner.get(f"/api/tasks?project_id={project['id']}").json()) == 1
             assert teammate.get(f"/api/tasks?project_id={project['id']}").json()[0]["id"] == task["id"]
@@ -138,31 +144,27 @@ def test_group_workspace_tasks_status_transitions_and_chat_timestamps(tmp_path, 
         assert len(owned_group_tasks) == 1 and owned_group_tasks[0]["id"] == task["id"]
 
 
-def test_invitation_code_is_email_bound_and_one_time(tmp_path, monkeypatch):
+def test_email_invitation_routes_are_removed_and_join_code_is_not_email_bound(tmp_path, monkeypatch):
     with client_for(tmp_path / "planner.db", monkeypatch) as owner:
         register(owner)
         project = owner.post("/api/projects", json={"name": "Physics study group"}).json()
-        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email": "invited@example.edu"}).json()
         with TestClient(app) as wrong_user:
             register(wrong_user, "someone-else@example.edu", "Wrong user")
-            assert wrong_user.post("/api/invitations/accept", json={"token": invite["token"]}).status_code == 403
+            assert wrong_user.post("/api/invitations/accept", json={"token": "x"*32}).status_code == 404
             assert wrong_user.get(f"/api/projects/{project['id']}").status_code == 404
         with TestClient(app) as invited_user:
             register(invited_user, "invited@example.edu", "Invited user")
-            accepted = invited_user.post("/api/invitations/accept", json={"token": invite["token"]})
-            assert accepted.status_code == 200
+            join_group(owner, invited_user, project)
             assert invited_user.get(f"/api/projects/{project['id']}").status_code == 200
-            assert invited_user.post("/api/invitations/accept", json={"token": invite["token"]}).status_code == 404
 
 
 def test_direct_messages_are_private_to_shared_group_participants(tmp_path, monkeypatch):
     with client_for(tmp_path / "planner.db", monkeypatch) as alice:
         register(alice, "alice@example.edu", "Alice")
         project = alice.post("/api/projects", json={"name": "Literature group"}).json()
-        invite = alice.post(f"/api/projects/{project['id']}/invites", json={"email": "ben@example.edu"}).json()
         with TestClient(app) as ben:
             register(ben, "ben@example.edu", "Ben")
-            ben.post(f"/api/invitations/{invite['token']}/accept")
+            join_group(alice, ben, project)
             contacts = ben.get("/api/people").json()
             assert contacts == [{"id": 1, "name": "Alice", "username": "alice", "avatar": "violet", "profile_photo": None}]
             group_search = ben.get("/api/people/search?q=alice").json()
@@ -261,10 +263,9 @@ def test_group_message_edit_delete_pin_authorization(tmp_path, monkeypatch):
     with client_for(tmp_path / "planner.db", monkeypatch) as owner:
         register(owner)
         project = owner.post("/api/projects", json={"name": "Study crew"}).json()
-        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email": "sam@example.edu"}).json()
         with TestClient(app) as editor:
             register(editor, "sam@example.edu", "Sam")
-            editor.post(f"/api/invitations/{invite['token']}/accept")
+            join_group(owner, editor, project)
             msg = editor.post(f"/api/projects/{project['id']}/messages", json={"body": "First draft"}).json()
             assert owner.patch(f"/api/projects/{project['id']}/messages/{msg['id']}", json={"body": "Changed by owner"}).status_code == 403
             edited = editor.patch(f"/api/projects/{project['id']}/messages/{msg['id']}", json={"body": "Revised draft"})
@@ -322,10 +323,9 @@ def test_direct_message_pins_are_private_and_jumpable_data(tmp_path, monkeypatch
     with client_for(tmp_path / "direct-pins.db", monkeypatch) as owner:
         register(owner, "owner@example.edu", "Owner")
         project = owner.post("/api/projects", json={"name": "Study crew"}).json()
-        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email": "mate@example.edu", "role": "editor"}).json()
         with TestClient(app) as mate:
             register(mate, "mate@example.edu", "Mate")
-            assert mate.post(f"/api/invitations/{invite['token']}/accept").status_code == 200
+            join_group(owner, mate, project)
             conversation = owner.post("/api/direct/conversations", json={"recipient_id": 2}).json()
             message = owner.post(f"/api/direct/conversations/{conversation['id']}/messages", json={"body": "Remember the lab notes"}).json()
             assert mate.post(f"/api/direct/conversations/{conversation['id']}/messages/{message['id']}/pin").json() == {"pinned": True}
@@ -365,12 +365,11 @@ def test_group_role_permissions_and_ownership_transfer(tmp_path, monkeypatch):
     with client_for(tmp_path / "roles.db", monkeypatch) as owner:
         register(owner, "owner@example.edu", "Owner")
         project = owner.post("/api/projects", json={"name":"Team"}).json()
-        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email":"student@example.edu","role":"editor"}).json()
         with TestClient(app) as student:
             register(student, "student@example.edu", "Student")
-            student.post(f"/api/invitations/{invite['token']}/accept")
+            join_group(owner, student, project)
             assert student.patch(f"/api/projects/{project['id']}", json={"name":"Hijacked"}).status_code == 403
-            assert student.post(f"/api/projects/{project['id']}/invites", json={"email":"other@example.edu"}).status_code == 403
+            assert student.post(f"/api/projects/{project['id']}/invites", json={"email":"other@example.edu"}).status_code == 404
             assert owner.patch(f"/api/projects/{project['id']}/members/2", json={"role":"admin"}).json()["role"] == "admin"
             assert student.patch(f"/api/projects/{project['id']}", json={"name":"Team renamed","description":"Shared goal"}).status_code == 200
             admin_update = student.patch(f"/api/projects/{project['id']}", json={"name":"Team renamed","description":"Shared goal","avatar":"ocean"})
@@ -393,10 +392,9 @@ def test_assignment_scope_filters_and_group_avatar_permissions(tmp_path, monkeyp
         assert [task["id"] for task in owner.get("/api/tasks?scope=mine").json()] == [personal["id"]]
         assert [task["id"] for task in owner.get("/api/tasks?scope=group").json()] == [shared["id"]]
         assert owner.get("/api/tasks?scope=unknown").status_code == 422
-        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email":"student@example.edu", "role":"editor"}).json()
         with client_for(tmp_path / "scope-avatar.db", monkeypatch) as student:
             register(student, "student@example.edu", "Student")
-            assert student.post("/api/invitations/accept", json={"token":invite["token"]}).status_code == 200
+            join_group(owner, student, project)
             assert student.patch(f"/api/projects/{project['id']}", json={"name":"Changed", "avatar":"sun"}).status_code == 403
         updated = owner.patch(f"/api/projects/{project['id']}", json={"name":"Study circle", "description":"Shared notes", "avatar":"sun"})
         assert updated.status_code == 200 and updated.json()["avatar"] == "sun"
@@ -447,11 +445,10 @@ def test_profile_photo_is_reencoded_and_svg_or_invalid_images_are_rejected(tmp_p
         assert alice.post("/api/profile/photo", files={"photo":("fake.jpg",b"not an image","image/jpeg")}).status_code == 415
         assert alice.post("/api/profile/photo", files={"photo":("large.jpg",b"x"*(5*1024*1024+1),"image/jpeg")}).status_code == 413
         project=alice.post("/api/projects",json={"name":"Photo access group"}).json()
-        invite=alice.post(f"/api/projects/{project['id']}/invites",json={"email":"bob@example.edu"}).json()
         with TestClient(app) as bob:
             register(bob, "bob@example.edu", "Bob")
             assert bob.get("/api/profile/photo").status_code == 404
-            bob.post(f"/api/invitations/{invite['token']}/accept")
+            join_group(alice, bob, project)
             peer_photo=bob.get("/api/people/1/photo")
             assert peer_photo.status_code == 200 and peer_photo.headers["content-type"] == "image/webp"
         with TestClient(app) as stranger:
@@ -500,15 +497,59 @@ def test_legacy_account_gets_unique_handle_without_fabricated_task_dates(tmp_pat
         assert dates == (None, None)
 
 
-def test_invitation_expiration_is_enforced(tmp_path, monkeypatch):
-    path = tmp_path / "planner.db"
+def test_leave_group_and_owner_cannot_orphan_members(tmp_path, monkeypatch):
+    with client_for(tmp_path / "leave.db", monkeypatch) as owner:
+        register(owner, "owner@example.edu", "Owner")
+        project = owner.post("/api/projects", json={"name":"Team"}).json()
+        with TestClient(app) as student:
+            register(student, "student@example.edu", "Student")
+            join_group(owner, student, project)
+            assert owner.post(f"/api/projects/{project['id']}/leave").status_code == 409
+            assert owner.get(f"/api/projects/{project['id']}").status_code == 200
+            assert student.post(f"/api/projects/{project['id']}/leave").status_code == 204
+            assert student.get(f"/api/projects/{project['id']}").status_code == 404
+        assert owner.post(f"/api/projects/{project['id']}/leave").status_code == 204
+        assert owner.get("/api/projects").json() == []
+
+
+def test_milestone_optional_date_title_limit_and_migration_cleanup(tmp_path, monkeypatch):
+    path = tmp_path / "milestones.db"
+    with sqlite3.connect(path) as con:
+        con.execute("PRAGMA foreign_keys=ON")
+        con.execute("CREATE TABLE users(id INTEGER PRIMARY KEY,email TEXT NOT NULL UNIQUE COLLATE NOCASE,name TEXT NOT NULL,password_hash TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT 'old')")
+        con.execute("INSERT INTO users(id,email,name,password_hash) VALUES(1,'legacy@example.edu','Legacy','hash')")
+        con.execute("CREATE TABLE projects(id INTEGER PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,created_at TEXT NOT NULL DEFAULT 'old')")
+        con.execute("INSERT INTO projects(id,name,created_by) VALUES(1,'Legacy group',1)")
+        con.execute("CREATE TABLE milestones(id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,title TEXT NOT NULL,due_date TEXT NOT NULL,status TEXT NOT NULL,created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,created_at TEXT NOT NULL DEFAULT 'old')")
+        con.execute("INSERT INTO milestones VALUES(1,1,'Keep this milestone','2026-10-20','open',1,'old')")
+        con.execute("CREATE TABLE invitations(id INTEGER PRIMARY KEY,project_id INTEGER,email TEXT,token_hash TEXT)")
+        con.execute("INSERT INTO invitations VALUES(1,1,'unused@example.edu','token-hash')")
     with client_for(path, monkeypatch) as owner:
-        register(owner)
-        project = owner.post("/api/projects", json={"name": "Review group"}).json()
-        invite = owner.post(f"/api/projects/{project['id']}/invites", json={"email": "late@example.edu"}).json()
-        con = sqlite3.connect(path)
-        con.execute("UPDATE invitations SET expires_at='2000-01-01T00:00:00Z'")
-        con.commit(); con.close()
-        with TestClient(app) as late:
-            register(late, "late@example.edu", "Late Student")
-            assert late.post("/api/invitations/accept", json={"token": invite['token']}).status_code == 404
+        register(owner, "owner2@example.edu", "Owner")
+        project = owner.post("/api/projects", json={"name":"Fresh group"}).json()
+        without_date=owner.post(f"/api/projects/{project['id']}/milestones",json={"title":"Checkpoint"})
+        assert without_date.status_code==201 and without_date.json()["due_date"] is None
+        assert owner.post(f"/api/projects/{project['id']}/milestones",json={"title":"x"*41}).status_code==422
+        con=sqlite3.connect(path)
+        row=con.execute("SELECT title,due_date FROM milestones WHERE id=1").fetchone()
+        invitation_exists=con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='invitations'").fetchone()
+        nullable=next(column[3] for column in con.execute("PRAGMA table_info(milestones)") if column[1]=='due_date')
+        con.close()
+        assert row==("Keep this milestone","2026-10-20")
+        assert invitation_exists is None and nullable==0
+
+
+def test_group_assignment_reassignment_is_authorized_and_persisted(tmp_path, monkeypatch):
+    with client_for(tmp_path / "assignees.db", monkeypatch) as owner:
+        register(owner,"owner@example.edu","Owner")
+        project=owner.post("/api/projects",json={"name":"Shared work"}).json()
+        with TestClient(app) as mate:
+            register(mate,"mate@example.edu","Mate")
+            join_group(owner,mate,project)
+            task=owner.post("/api/tasks",json={"title":"Shared task","due_date":"2026-10-21","project_id":project["id"],"assignee_ids":[]}).json()
+            assert [item["id"] for item in task["assignees"]]==[1]
+            updated=owner.patch(f"/api/tasks/{task['id']}",json={"assignee_ids":[2]})
+            assert updated.status_code==200 and {item["id"] for item in updated.json()["assignees"]}=={1,2}
+            assert mate.patch(f"/api/tasks/{task['id']}",json={"assignee_ids":[999]}).status_code==400
+            cleared=owner.patch(f"/api/tasks/{task['id']}",json={"assignee_ids":[]})
+            assert cleared.status_code==200 and [item["id"] for item in cleared.json()["assignees"]]==[1]

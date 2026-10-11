@@ -123,22 +123,28 @@ def initialize() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
             title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 160),
-            due_date TEXT NOT NULL,
+            due_date TEXT,
             status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','done')),
             created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
         )""")
-        con.execute("""CREATE TABLE IF NOT EXISTS invitations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-            email TEXT NOT NULL COLLATE NOCASE,
-            token_hash TEXT NOT NULL UNIQUE,
-            role TEXT NOT NULL CHECK(role IN ('editor','viewer')),
-            invited_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            expires_at TEXT NOT NULL,
-            accepted_at TEXT,
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-        )""")
+        milestone_columns = {row["name"]: row for row in con.execute("PRAGMA table_info(milestones)")}
+        if milestone_columns["due_date"]["notnull"]:
+            con.execute("""CREATE TABLE milestones_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 160),
+                due_date TEXT,
+                status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','done')),
+                created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+            )""")
+            con.execute("INSERT INTO milestones_v2(id,project_id,title,due_date,status,created_by,created_at) SELECT id,project_id,title,due_date,status,created_by,created_at FROM milestones")
+            con.execute("DROP TABLE milestones")
+            con.execute("ALTER TABLE milestones_v2 RENAME TO milestones")
+        # Email-specific invitations are retired. This table was dedicated to that
+        # workflow; memberships and join requests live in separate tables.
+        con.execute("DROP TABLE IF EXISTS invitations")
         con.execute("""CREATE TABLE IF NOT EXISTS comments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,

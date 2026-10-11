@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 import hashlib
 import hmac
 import io
@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import db
-from app.schemas import (DirectConversationCreate, FriendRequestCreate, JoinCodeSubmit, InviteAccept, InviteCreate, Login, MessageCreate, MessageUpdate, NotificationAction, ProjectUpdate, MemberRoleUpdate, OwnershipTransfer,
+from app.schemas import (DirectConversationCreate, FriendRequestCreate, JoinCodeSubmit, Login, MessageCreate, MessageUpdate, NotificationAction, ProjectUpdate, MemberRoleUpdate, OwnershipTransfer,
                          MilestoneCreate, MilestoneUpdate, PasswordUpdate, ProfileUpdate,
                          ProjectCreate, Priority, Register, TaskCreate, TaskStatus, TaskUpdate)
 from app.telemetry import configure_telemetry, request_metrics
@@ -144,7 +144,7 @@ def _task_access(con: sqlite3.Connection, task_id: int, user_id: int, write: boo
 def _task_json(con: sqlite3.Connection, row: sqlite3.Row) -> dict:
     task = db.row_to_task(row)
     task["assignees"] = [dict(item) for item in con.execute(
-        "SELECT u.id,u.name,u.username FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=? ORDER BY u.name", (row["id"],)
+        "SELECT u.id,u.name,u.username,u.avatar,u.profile_photo FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=? ORDER BY u.name", (row["id"],)
     ).fetchall()]
     return task
 
@@ -288,7 +288,8 @@ def list_projects(user: User):
     with db.connect() as con:
         return [dict(row) for row in con.execute("""SELECT p.*,CASE WHEN m.legacy_readonly=1 THEN 'viewer' ELSE COALESCE(m.role_v6,CASE m.role WHEN 'owner' THEN 'owner' ELSE 'student' END) END AS role,
             (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id=p.id) AS member_count,
-            (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id) AS task_count
+            (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id) AS task_count,
+            (SELECT COUNT(*) FROM milestones ms WHERE ms.project_id=p.id) AS milestone_count
             FROM projects p JOIN project_members m ON m.project_id=p.id
             WHERE m.user_id=? ORDER BY p.created_at DESC,p.id DESC""", (user["id"],)).fetchall()]
 
@@ -311,7 +312,7 @@ def create_project(body: ProjectCreate, user: User):
         project_id = cur.lastrowid
         con.execute("INSERT INTO project_members(project_id,user_id,role,role_v6) VALUES(?,?,'owner','owner')", (project_id, user["id"]))
         _log_activity(con, project_id, user["id"], "project_created", f"created {name}")
-        return dict(con.execute("SELECT p.*,m.role_v6 AS role,1 AS member_count,0 AS task_count FROM projects p JOIN project_members m ON m.project_id=p.id WHERE p.id=? AND m.user_id=?", (project_id, user["id"])).fetchone())
+        return dict(con.execute("SELECT p.*,m.role_v6 AS role,1 AS member_count,0 AS task_count,0 AS milestone_count FROM projects p JOIN project_members m ON m.project_id=p.id WHERE p.id=? AND m.user_id=?", (project_id, user["id"])).fetchone())
 
 
 @app.patch("/api/projects/{project_id}")
@@ -363,6 +364,21 @@ def remove_member(project_id: int, member_id: int, user: User):
             raise HTTPException(status_code=409, detail="transfer ownership before removing the owner")
         con.execute("DELETE FROM project_members WHERE project_id=? AND user_id=?", (project_id, member_id))
         con.execute("DELETE FROM task_assignees WHERE user_id=? AND task_id IN (SELECT id FROM tasks WHERE project_id=?)", (member_id, project_id))
+    return Response(status_code=204)
+
+
+@app.post("/api/projects/{project_id}/leave", status_code=204)
+def leave_project(project_id: int, user: User):
+    with db.connect() as con:
+        member = _membership(con, project_id, user["id"])
+        if member["role"] == "owner":
+            other_members = con.execute("SELECT COUNT(*) FROM project_members WHERE project_id=? AND user_id<>?", (project_id, user["id"])).fetchone()[0]
+            if other_members:
+                raise HTTPException(status_code=409, detail="transfer ownership before leaving this group")
+            con.execute("DELETE FROM projects WHERE id=?", (project_id,))
+        else:
+            con.execute("DELETE FROM project_members WHERE project_id=? AND user_id=?", (project_id, user["id"]))
+            con.execute("DELETE FROM task_assignees WHERE user_id=? AND task_id IN (SELECT id FROM tasks WHERE project_id=?)", (user["id"], project_id))
     return Response(status_code=204)
 
 
@@ -486,9 +502,11 @@ def create_milestone(project_id: int, body: MilestoneCreate, user: User):
     title = body.title.strip()
     if not title:
         raise HTTPException(status_code=422, detail="milestone title cannot be blank")
+    if len(title) > 40:
+        raise HTTPException(status_code=422, detail="milestone title cannot exceed 40 characters")
     with db.connect() as con:
         _can_edit(_membership(con, project_id, user["id"])["role"])
-        cursor = con.execute("INSERT INTO milestones(project_id,title,due_date,created_by) VALUES(?,?,?,?)", (project_id, title, body.due_date.isoformat(), user["id"]))
+        cursor = con.execute("INSERT INTO milestones(project_id,title,due_date,created_by) VALUES(?,?,?,?)", (project_id, title, body.due_date.isoformat() if body.due_date else None, user["id"]))
         _log_activity(con, project_id, user["id"], "milestone_created", f"added milestone {title}")
         return dict(con.execute("SELECT * FROM milestones WHERE id=?", (cursor.lastrowid,)).fetchone())
 
@@ -496,7 +514,7 @@ def create_milestone(project_id: int, body: MilestoneCreate, user: User):
 @app.patch("/api/projects/{project_id}/milestones/{milestone_id}")
 def update_milestone(project_id: int, milestone_id: int, body: MilestoneUpdate, user: User):
     changes = body.model_dump(exclude_unset=True)
-    if not changes or any(value is None for value in changes.values()):
+    if not changes:
         raise HTTPException(status_code=400, detail="provide milestone fields to update")
     with db.connect() as con:
         _can_edit(_membership(con, project_id, user["id"])["role"])
@@ -507,54 +525,12 @@ def update_milestone(project_id: int, milestone_id: int, body: MilestoneUpdate, 
             changes[key] = value.isoformat() if isinstance(value, date) else value.strip() if key == "title" else value
         if "title" in changes and not changes["title"]:
             raise HTTPException(status_code=422, detail="milestone title cannot be blank")
+        if "title" in changes and len(changes["title"]) > 40:
+            raise HTTPException(status_code=422, detail="milestone title cannot exceed 40 characters")
         fields = ",".join(f"{key}=?" for key in changes)
         con.execute(f"UPDATE milestones SET {fields} WHERE id=? AND project_id=?", [*changes.values(), milestone_id, project_id])
         _log_activity(con, project_id, user["id"], "milestone_updated", f"updated milestone {row['title']}")
         return dict(con.execute("SELECT * FROM milestones WHERE id=?", (milestone_id,)).fetchone())
-
-
-@app.post("/api/projects/{project_id}/invites", status_code=201)
-def invite(project_id: int, body: InviteCreate, user: User):
-    email = str(body.email).strip().lower()
-    token = secrets.token_urlsafe(32)
-    with db.connect() as con:
-        role = _membership(con, project_id, user["id"])["role"]
-        if role not in {"owner", "admin"}:
-            raise HTTPException(status_code=403, detail="admin access is required to invite members")
-        target = con.execute("SELECT id FROM users WHERE email=? COLLATE NOCASE", (email,)).fetchone()
-        if target and con.execute("SELECT 1 FROM project_members WHERE project_id=? AND user_id=?", (project_id, target["id"])).fetchone():
-            raise HTTPException(status_code=409, detail="this person is already a member")
-        token_hash = hashlib.sha256(token.encode()).hexdigest()
-        expires = (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        stored_role = "viewer" if body.role == "viewer" else "editor"
-        public_role = "viewer" if body.role == "viewer" else "student"
-        con.execute("INSERT INTO invitations(project_id,email,token_hash,role,invited_by,expires_at) VALUES(?,?,?,?,?,?)", (project_id, email, token_hash, stored_role, user["id"], expires))
-        return {"email": email, "role": public_role, "token": token, "expires_at": expires}
-
-
-def _accept_invite(token: str, user: dict):
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
-    with db.connect() as con:
-        row = con.execute("SELECT * FROM invitations WHERE token_hash=? AND accepted_at IS NULL", (token_hash,)).fetchone()
-        if row is None or row["expires_at"] < datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"):
-            raise HTTPException(status_code=404, detail="invitation is invalid or expired")
-        if row["email"].lower() != user["email"].lower():
-            raise HTTPException(status_code=403, detail="sign in with the invited email address")
-        con.execute("INSERT OR IGNORE INTO project_members(project_id,user_id,role,role_v6,legacy_readonly) VALUES(?,?,'editor','student',?)", (row["project_id"], user["id"], int(row["role"] == "viewer")))
-        con.execute("UPDATE invitations SET accepted_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?", (row["id"],))
-        _log_activity(con, row["project_id"], user["id"], "member_joined", f"{user['name']} joined the project")
-        return dict(con.execute("SELECT * FROM projects WHERE id=?", (row["project_id"],)).fetchone())
-
-
-@app.post("/api/invitations/{token}/accept")
-def accept_invite(token: str, user: User):
-    return _accept_invite(token, user)
-
-
-@app.post("/api/invitations/accept")
-def accept_invite_code(body: InviteAccept, user: User):
-    """Accept an owner-issued high-entropy invitation code; existing email binding still applies."""
-    return _accept_invite(body.token, user)
 
 
 @app.get("/api/tasks")
