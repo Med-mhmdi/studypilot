@@ -57,6 +57,12 @@ request_metrics(app)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return FileResponse("static/favicon.svg", media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-cache, must-revalidate"})
+
+
 @app.get("/", include_in_schema=False)
 def home():
     return FileResponse("static/index.html")

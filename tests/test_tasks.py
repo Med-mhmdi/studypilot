@@ -590,3 +590,12 @@ def test_v11_group_ui_limits_copy_feedback_and_shared_board_contract():
     assert "group-plan .board-lanes{grid-template-columns:repeat(4,minmax(0,1fr))" in styles
     assert "-webkit-line-clamp:2" in styles
     assert "#1684FF" in favicon and "studypilot-airplane" not in favicon
+
+
+def test_favicon_fallback_serves_the_airplane_svg_without_stale_caching(tmp_path, monkeypatch):
+    with client_for(tmp_path / "favicon.db", monkeypatch) as client:
+        response = client.get("/favicon.ico")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("image/svg+xml")
+        assert response.headers["cache-control"] == "no-cache, must-revalidate"
+        assert "#1684FF" in response.text
