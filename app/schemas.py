@@ -1,7 +1,7 @@
 from datetime import date
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class RequestModel(BaseModel):
@@ -34,9 +34,16 @@ class PasswordUpdate(RequestModel):
 
 
 class ProjectCreate(RequestModel):
-    name: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=40)
     description: str = Field(default="", max_length=2000)
     avatar: str = Field(default="violet", pattern=r"^(violet|ocean|mint|coral|sun)$")
+
+    @field_validator("name")
+    @classmethod
+    def name_has_at_most_four_words(cls, value: str) -> str:
+        if len(value.split()) > 4:
+            raise ValueError("group name can use up to 4 words")
+        return value
 
 
 class NotificationAction(RequestModel):
@@ -45,9 +52,16 @@ class NotificationAction(RequestModel):
 
 
 class ProjectUpdate(RequestModel):
-    name: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=40)
     description: str = Field(default="", max_length=2000)
     avatar: str | None = Field(default=None, pattern=r"^(violet|ocean|mint|coral|sun)$")
+
+    @field_validator("name")
+    @classmethod
+    def name_has_at_most_four_words(cls, value: str) -> str:
+        if len(value.split()) > 4:
+            raise ValueError("group name can use up to 4 words")
+        return value
 
 
 class MemberRoleUpdate(RequestModel):

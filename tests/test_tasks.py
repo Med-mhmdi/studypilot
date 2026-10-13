@@ -553,3 +553,40 @@ def test_group_assignment_reassignment_is_authorized_and_persisted(tmp_path, mon
             assert mate.patch(f"/api/tasks/{task['id']}",json={"assignee_ids":[999]}).status_code==400
             cleared=owner.patch(f"/api/tasks/{task['id']}",json={"assignee_ids":[]})
             assert cleared.status_code==200 and [item["id"] for item in cleared.json()["assignees"]]==[1]
+
+
+def test_v11_group_and_bounded_text_limits_are_enforced_on_create_and_edit(tmp_path, monkeypatch):
+    with client_for(tmp_path / "v11-limits.db", monkeypatch) as client:
+        register(client)
+        group = client.post("/api/projects", json={"name": "Modern Biology Study Team"})
+        assert group.status_code == 201
+        assert len(group.json()["name"]) <= 40
+        forty_char_name = "One Two Three abcdefghijklmnopqrstuvwxyz"
+        assert len(forty_char_name) == 40
+        assert client.post("/api/projects", json={"name": forty_char_name}).status_code == 201
+        assert client.post("/api/projects", json={"name": "One Two Three Four Five"}).status_code == 422
+        assert client.post("/api/projects", json={"name": "x" * 41}).status_code == 422
+        assert client.patch(f"/api/projects/{group.json()['id']}", json={"name": "One Two Three Four Five"}).status_code == 422
+        assert client.patch(f"/api/projects/{group.json()['id']}", json={"name": "x" * 41}).status_code == 422
+        assert client.patch("/api/profile", json={"name": "Alex Student", "bio": "b" * 160}).status_code == 200
+        assert client.patch("/api/profile", json={"name": "Alex Student", "bio": "b" * 161}).status_code == 422
+        assert client.post("/api/tasks", json={"title": "t" * 160, "due_date": "2026-10-25"}).status_code == 201
+        assert client.post("/api/tasks", json={"title": "t" * 161, "due_date": "2026-10-25"}).status_code == 422
+
+
+def test_v11_group_ui_limits_copy_feedback_and_shared_board_contract():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "static" / "index.html").read_text(encoding="utf-8")
+    script = (root / "static" / "app.js").read_text(encoding="utf-8")
+    styles = (root / "static" / "styles.css").read_text(encoding="utf-8")
+    favicon = (root / "static" / "favicon.svg").read_text(encoding="utf-8")
+    assert 'maxlength="40"' in html
+    assert "Milestone title (max 40 characters)" in html
+    assert 'href="/static/favicon.svg?v=11"' in html
+    assert "renderBoard(board,filtered,project" in script
+    assert "setIcon(button,'check')" in script and "button.classList.add('is-copied')" in script
+    assert "group-plan .board-lanes{grid-template-columns:repeat(4,minmax(0,1fr))" in styles
+    assert "-webkit-line-clamp:2" in styles
+    assert "#1684FF" in favicon and "studypilot-airplane" not in favicon

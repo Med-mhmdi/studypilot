@@ -1,6 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" fill="none">
-  <rect x="3" y="3" width="34" height="34" rx="11" fill="#6657D9"/>
-  <path d="M13 10.5h10.5L29 16v14H13V10.5Z" fill="#fff"/>
-  <path d="M23.5 10.5V16H29" stroke="#B8B0FF" stroke-width="1.8" stroke-linejoin="round"/>
-  <path d="m16.7 22 2.3 2.3 5-5.1" stroke="#6657D9" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <defs>
+    <linearGradient id="sky" x1="8" y1="5" x2="40" y2="44" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#102B68"/>
+      <stop offset="1" stop-color="#09183D"/>
+    </linearGradient>
+    <linearGradient id="plane" x1="12" y1="8" x2="35" y2="35" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#63D5FF"/>
+      <stop offset="1" stop-color="#1684FF"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="44" height="44" rx="15" fill="url(#sky)"/>
+  <path d="m10 28 27-16-12 27-4-12-11 1Z" fill="url(#plane)"/>
+  <path d="m21 27 10-8" stroke="#DDF8FF" stroke-width="2" stroke-linecap="round"/>
 </svg>

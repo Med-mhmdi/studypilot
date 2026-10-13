@@ -4,6 +4,7 @@ const appMessage = $('#app-message');
 const taskForm = $('#task-form');
 let user = null;
 let tasks = [];
+let groupBoardItems = [];
 let projects = [];
 let people = [];
 let conversations = [];
@@ -21,6 +22,57 @@ let showFullArchive = false;
 let boardMetric = '';
 let activeStatus = 'all';
 let expandedPeopleList = '';
+
+const iconPaths = {
+  copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 5h2a2 2 0 0 1 2 2v11M6 9H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-1"/>',
+  check: '<path d="m5 12 4 4L19 6"/>',
+  more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  plane: '<path d="m3 11 18-8-8 18-2-8-8-2Z"/><path d="m11 13 5-5"/>',
+  group: '<circle cx="9" cy="8" r="3"/><path d="M3 20v-1a6 6 0 0 1 12 0v1M16 5.5a3 3 0 0 1 0 5.8M18 14a5 5 0 0 1 3 4.6V20"/>',
+  assignments: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 9h6M9 13h6M9 17h3M9 2h6"/>',
+  milestones: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  edit: '<path d="m4 16-.8 4.8L8 20l11-11-4-4L4 16Z"/><path d="m13.5 6.5 4 4"/>',
+  chat: '<path d="M20 11.5a7.5 7.5 0 0 1-8 7.5 8 8 0 0 1-3.5-.8L4 20l1.2-3.8A7.2 7.2 0 0 1 4 12c0-4.1 3.6-7.5 8-7.5s8 3.1 8 7Z"/><path d="M8 12h.01M12 12h.01M16 12h.01"/>',
+  add: '<path d="M12 5v14M5 12h14"/>',
+  close: '<path d="m6 6 12 12M18 6 6 18"/>',
+  calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18M8 14h3M8 17h7"/>',
+  book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v17H6.5A2.5 2.5 0 0 0 4 22V5.5Z"/><path d="M4 17a2.5 2.5 0 0 1 2.5-2.5H20M8 7h8"/>',
+  move: '<path d="M7 7h13M20 7l-4-4M20 7l-4 4M17 17H4m0 0 4-4m-4 4 4 4"/>',
+  comment: '<path d="M20 11.5a7.5 7.5 0 0 1-8 7.5 8 8 0 0 1-3.5-.8L4 20l1.2-3.8A7.2 7.2 0 0 1 4 12c0-4.1 3.6-7.5 8-7.5s8 3.1 8 7Z"/><path d="M8 12h.01M12 12h.01M16 12h.01"/>',
+  history: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2M4 4v4h4"/>',
+  grip: '<circle cx="8" cy="5" r="1"/><circle cx="16" cy="5" r="1"/><circle cx="8" cy="12" r="1"/><circle cx="16" cy="12" r="1"/><circle cx="8" cy="19" r="1"/><circle cx="16" cy="19" r="1"/>',
+  moon: '<path d="M20.5 15.2A8.5 8.5 0 0 1 8.8 3.5 8.7 8.7 0 1 0 20.5 15.2Z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4"/>',
+  trash: '<path d="M4 7h16M10 11v6m4-6v6M5 7l1 14h12l1-14M9 7V4h6v3"/>',
+};
+function iconMarkup(name) { return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${iconPaths[name]||iconPaths.book}</svg>`; }
+function setIcon(button, name) { button.innerHTML = iconMarkup(name); }
+
+function attachCharacterCounter(input) {
+  if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) || input.maxLength < 0 || input.type === 'file' || input.dataset.limitCounter) return;
+  input.dataset.limitCounter = 'true';
+  const counter = document.createElement('small');
+  counter.className = 'character-counter';
+  counter.id = `limit-${Math.random().toString(36).slice(2)}`;
+  counter.setAttribute('aria-live', 'polite');
+  const describedBy = (input.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+  input.setAttribute('aria-describedby', [...describedBy, counter.id].join(' '));
+  input.insertAdjacentElement('afterend', counter);
+  const update = () => {
+    const remaining = Math.max(0, input.maxLength - input.value.length);
+    counter.textContent = `${input.value.length}/${input.maxLength}${remaining === 0 ? ' · Limit reached' : ''}`;
+    counter.classList.toggle('is-at-limit', remaining === 0);
+  };
+  input.addEventListener('input', update);
+  input.addEventListener('change', update);
+  input.addEventListener('reset', () => requestAnimationFrame(update));
+  update();
+}
+function refreshCharacterCounters(root = document) { $$('[maxlength]', root).forEach(attachCharacterCounter); $$('.character-counter', root).forEach(counter => { const input = counter.previousElementSibling; if (input) input.dispatchEvent(new Event('change')); }); }
+refreshCharacterCounters();
+document.addEventListener('reset', event => requestAnimationFrame(() => refreshCharacterCounters(event.target)));
+new MutationObserver(records => records.forEach(record => record.addedNodes.forEach(node => { if (node.nodeType === Node.ELEMENT_NODE) { if(node.matches('[maxlength]'))attachCharacterCounter(node);refreshCharacterCounters(node); } }))).observe(document.body, { childList: true, subtree: true });
 
 function showMessage(message, type = 'error') {
   appMessage.textContent = message;
@@ -88,10 +140,15 @@ function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem('studypilot-theme', theme);
   const dark = theme === 'dark';
-  $('#theme-toggle').textContent = dark ? '☀' : '☾';
+  setIcon($('#theme-toggle'), dark ? 'sun' : 'moon');
   $('#theme-toggle').setAttribute('aria-label', dark ? 'Switch to light mode' : 'Switch to dark mode');
   document.querySelector('meta[name="theme-color"]').content = dark ? '#171923' : '#f6f7fb';
 }
+$('#notification-button').innerHTML=`${iconMarkup('bell')}<span id="notification-dot" hidden></span>`;
+$$('button.icon-button[data-close],.profile-photo-close').forEach(button=>setIcon(button,'close'));
+if($('#delete-task'))setIcon($('#delete-task'),'trash');
+['new-task','board-new-task'].forEach(id=>{const button=$(`#${id}`);if(button)button.innerHTML=`${iconMarkup('add')}<span>New assignment</span>`;});
+$$('.stat-icon').forEach((node,index)=>{const icons=['calendar','history','check','milestones'];node.innerHTML=iconMarkup(icons[index]||'book');});
 
 function avatarLabel(profile) { return ({ violet: '✦', ocean: '◈', mint: '✿', coral: '●', sun: '☼' })[profile?.avatar] || (profile?.name || 'S').trim().slice(0, 1).toUpperCase(); }
 function setAvatar(node, profile) { node.textContent = avatarLabel(profile); node.dataset.avatar = profile?.avatar || 'violet';const imageUrl=profile?.profile_photo?(Number(profile.id)===Number(user?.id)?'/api/profile/photo':`/api/people/${profile.id}/photo`):'';node.style.backgroundImage=imageUrl?`url("${imageUrl}?v=${profile.id}")`:''; if(imageUrl)node.style.color='transparent';else node.style.color=''; }
@@ -344,8 +401,8 @@ function makeTaskCard(task, project) {
   const titleLine = document.createElement('div'); titleLine.className = 'task-card-title';
   const title = document.createElement('button'); title.className = 'task-title'; title.textContent = task.title; title.type='button'; title.setAttribute('aria-label',`View ${task.title}`);let titleClickTimer;title.addEventListener('click', () => {clearTimeout(titleClickTimer);titleClickTimer=setTimeout(()=>openTaskDetails(task, project),230);});title.addEventListener('dblclick',event=>{event.preventDefault();clearTimeout(titleClickTimer);if(canEdit)openEditTask(task,project);});
   const topActions=document.createElement('div');topActions.className='task-top-actions';
-  const edit = document.createElement('button');edit.type='button';edit.className='icon-button task-edit';edit.textContent='✎';edit.title='Edit assignment';edit.setAttribute('aria-label',`Edit ${task.title}`);edit.hidden=!canEdit;edit.addEventListener('click',()=>openEditTask(task,project));
-  const drag = document.createElement('button');drag.type='button';drag.className='icon-button task-drag';drag.textContent='⠿';drag.title='Drag to move';drag.setAttribute('aria-label',`Drag ${task.title} to another status`);drag.hidden=!canEdit;drag.draggable=canEdit;drag.addEventListener('dragstart',event=>{event.dataTransfer.setData('text/plain',String(task.id));event.dataTransfer.effectAllowed='move';});
+  const edit = document.createElement('button');edit.type='button';edit.className='icon-button task-edit';setIcon(edit,'edit');edit.title='Edit assignment';edit.setAttribute('aria-label',`Edit ${task.title}`);edit.hidden=!canEdit;edit.addEventListener('click',()=>openEditTask(task,project));
+  const drag = document.createElement('button');drag.type='button';drag.className='icon-button task-drag';setIcon(drag,'grip');drag.title='Drag to move';drag.setAttribute('aria-label',`Drag ${task.title} to another status`);drag.hidden=!canEdit;drag.draggable=canEdit;drag.addEventListener('dragstart',event=>{event.dataTransfer.setData('text/plain',String(task.id));event.dataTransfer.effectAllowed='move';});
   topActions.append(edit,drag);
   titleLine.append(title, topActions);
   const context = document.createElement('div'); context.className = 'task-context';
@@ -358,14 +415,14 @@ function makeTaskCard(task, project) {
   const description=document.createElement('p');description.className='task-description-preview';description.textContent=task.description||'';description.hidden=!task.description;
   const assignees=document.createElement('div');assignees.className='task-assignees';(task.assignees||[]).slice(0,4).forEach(person=>{const avatar=document.createElement('span');avatar.className='avatar task-assignee-avatar';setAvatar(avatar,person);avatar.title=person.name;avatar.setAttribute('aria-label',person.name);assignees.append(avatar);});if(!(task.assignees||[]).length){const me=document.createElement('span');me.textContent=project?'Unassigned':'You';assignees.append(me);}
   const actions = document.createElement('div'); actions.className = 'task-card-actions';
-  const moveButton=document.createElement('button');moveButton.type='button';moveButton.className='task-move-trigger icon-button';moveButton.textContent='↔';moveButton.title='Move assignment';moveButton.setAttribute('aria-label',`Move ${task.title}`);moveButton.hidden=!canEdit;
+  const moveButton=document.createElement('button');moveButton.type='button';moveButton.className='task-move-trigger icon-button';setIcon(moveButton,'move');moveButton.title='Move assignment';moveButton.setAttribute('aria-label',`Move ${task.title}`);moveButton.hidden=!canEdit;
   const moveMenu=document.createElement('div');moveMenu.className='task-move-popover';moveMenu.setAttribute('popover','auto');moveMenu.setAttribute('aria-label',`Move ${task.title} to a status`);
   Object.entries(statusNames).filter(([value])=>value!=='overdue').forEach(([value,name])=>{if(value===task.status)return;const option=document.createElement('button');option.type='button';option.textContent=`Move to ${name}`;option.addEventListener('click',()=>{moveMenu.hidePopover();moveButton.setAttribute('aria-expanded','false');changeTaskStatus(task,value,project);});moveMenu.append(option);});
   moveButton.setAttribute('aria-haspopup','menu');moveButton.setAttribute('aria-expanded','false');
   moveButton.addEventListener('click',()=>{if(moveMenu.matches(':popover-open')){moveMenu.hidePopover();moveButton.setAttribute('aria-expanded','false');return;}moveMenu.showPopover();moveButton.setAttribute('aria-expanded','true');const rect=moveButton.getBoundingClientRect();const width=moveMenu.offsetWidth;const height=moveMenu.offsetHeight;const left=Math.max(8,Math.min(rect.right-width,window.innerWidth-width-8));const top=rect.bottom+height+8<=window.innerHeight?rect.bottom+6:Math.max(8,rect.top-height-6);moveMenu.style.left=`${left}px`;moveMenu.style.top=`${top}px`;});
   moveMenu.addEventListener('toggle',event=>{if(event.newState==='closed')moveButton.setAttribute('aria-expanded','false');});
-  const comment = document.createElement('button'); comment.type='button';comment.className='icon-button';comment.textContent='▱';comment.title='Comments';comment.setAttribute('aria-label',`Comments for ${task.title}`);comment.addEventListener('click', () => toggleComments(card, task, project));
-  const historyButton=document.createElement('button');historyButton.type='button';historyButton.className='icon-button';historyButton.textContent='◷';historyButton.title='History';historyButton.setAttribute('aria-label',`History for ${task.title}`);historyButton.addEventListener('click',()=>toggleTaskHistory(card,task));
+  const comment = document.createElement('button'); comment.type='button';comment.className='icon-button';setIcon(comment,'comment');comment.title='Comments';comment.setAttribute('aria-label',`Comments for ${task.title}`);comment.addEventListener('click', () => toggleComments(card, task, project));
+  const historyButton=document.createElement('button');historyButton.type='button';historyButton.className='icon-button';setIcon(historyButton,'history');historyButton.title='History';historyButton.setAttribute('aria-label',`History for ${task.title}`);historyButton.addEventListener('click',()=>toggleTaskHistory(card,task));
   actions.append(moveButton, moveMenu, comment, historyButton);
   card.append(titleLine, context, description, deadline, assignees, actions);
   return card;
@@ -536,30 +593,33 @@ function renderProjects() {
   const grid = $('#projects-grid'); grid.replaceChildren();
   if (!projects.length) {
     const empty = document.createElement('div'); empty.className = 'group-empty';
-    const icon = document.createElement('span'); icon.className = 'empty-check'; icon.textContent = '✦';
+    const icon = document.createElement('img'); icon.className = 'study-illustration'; icon.src='/static/studypilot-study-illustration.png'; icon.alt=''; icon.width=220; icon.height=190; icon.loading='lazy';
     const heading = document.createElement('h2'); heading.textContent = 'No study groups yet';
     empty.append(icon, heading); grid.append(empty); return;
   }
   projects.forEach((project) => {
     const card = document.createElement('button'); card.className = 'project-card';
-    const icon = document.createElement('span'); icon.className = `project-icon group-avatar-${project.avatar || 'violet'}`; icon.setAttribute('aria-hidden','true'); icon.textContent = ({violet:'✦',ocean:'≈',mint:'❋',coral:'✿',sun:'☼'})[project.avatar] || '✦';
+    const copy = document.createElement('span'); copy.className='project-card-copy';
+    const icon = document.createElement('span'); icon.className = `project-icon group-avatar-${project.avatar || 'violet'}`; icon.setAttribute('aria-hidden','true'); icon.innerHTML = iconMarkup('book');
     const title = document.createElement('strong'); title.textContent = project.name;
     const description = document.createElement('p'); description.className='project-card-description'; description.textContent = project.description || '';
     const metrics = document.createElement('span'); metrics.className = 'project-metrics';
-    const members = document.createElement('span'); members.className = 'project-metric'; const memberIcon=document.createElement('b'); memberIcon.setAttribute('aria-hidden','true'); memberIcon.textContent='♙';
+    const members = document.createElement('span'); members.className = 'project-metric'; const memberIcon=document.createElement('b'); memberIcon.setAttribute('aria-hidden','true'); memberIcon.innerHTML=iconMarkup('group');
     const memberCount = document.createElement('strong'); memberCount.textContent = project.member_count; const memberLabel = document.createElement('small'); memberLabel.textContent = 'members'; members.append(memberIcon,memberCount,memberLabel);
-    const assignments = document.createElement('span'); assignments.className = 'project-metric'; const taskIcon=document.createElement('b'); taskIcon.setAttribute('aria-hidden','true'); taskIcon.textContent='▤';
+    const assignments = document.createElement('span'); assignments.className = 'project-metric'; const taskIcon=document.createElement('b'); taskIcon.setAttribute('aria-hidden','true'); taskIcon.innerHTML=iconMarkup('assignments');
     const taskCount = document.createElement('strong'); taskCount.textContent = project.task_count; const taskLabel = document.createElement('small'); taskLabel.textContent = 'assignments'; assignments.append(taskIcon,taskCount,taskLabel);
-    const milestones=document.createElement('span');milestones.className='project-metric';const milestoneIcon=document.createElement('b');milestoneIcon.setAttribute('aria-hidden','true');milestoneIcon.textContent='◇';const milestoneCount=document.createElement('strong');milestoneCount.textContent=project.milestone_count??0;const milestoneLabel=document.createElement('small');milestoneLabel.textContent='milestones';milestones.append(milestoneIcon,milestoneCount,milestoneLabel);
+    const milestones=document.createElement('span');milestones.className='project-metric';const milestoneIcon=document.createElement('b');milestoneIcon.setAttribute('aria-hidden','true');milestoneIcon.innerHTML=iconMarkup('milestones');const milestoneCount=document.createElement('strong');milestoneCount.textContent=project.milestone_count??0;const milestoneLabel=document.createElement('small');milestoneLabel.textContent='milestones';milestones.append(milestoneIcon,milestoneCount,milestoneLabel);
     metrics.append(members,assignments,milestones);
-    card.append(icon, title, description, metrics); card.addEventListener('click', () => { location.hash = `#/groups/${project.id}`; }); grid.append(card);
+    copy.append(icon,title,description);card.append(copy,metrics); card.addEventListener('click', () => { location.hash = `#/groups/${project.id}`; }); grid.append(card);
   });
 }
 
-$('#new-project').addEventListener('click', () => { $('#project-form').reset(); $('#project-form').elements.avatar.value='violet'; $('#project-form').dataset.id=''; $('#project-dialog-title').textContent='Start a study group'; $('#save-group').textContent='Create group'; $('.dialog-danger-zone').hidden=true; $('#project-error').textContent = ''; $('#project-dialog').showModal(); });
+$('#new-project').addEventListener('click', () => { $('#project-form').reset(); $('#project-form').elements.avatar.value='violet'; $('#project-form').dataset.id=''; $('#project-dialog-title').textContent='Start a study group'; $('#save-group').textContent='Create group'; $('.dialog-danger-zone').hidden=true; $('#project-error').textContent = ''; refreshCharacterCounters($('#project-form')); $('#project-dialog').showModal(); });
 $('#project-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  try { const id=event.currentTarget.dataset.id;const payload=Object.fromEntries(new FormData(event.currentTarget));const project=id?await patch(`/api/projects/${id}`,payload):await post('/api/projects',payload); $('#project-dialog').close(); await loadProjects(); if(id&&routeFromHash().name==='groups'&&Number(routeFromHash().id)===Number(project.id)){await renderProject(project.id);if(activeGroupChatId===project.id){const header=$('.thread-header h2');if(header)header.textContent=project.name;await loadConversations();renderConversations();}}else location.hash = `#/groups/${project.id}`; }
+  const name=event.currentTarget.elements.name.value.trim();
+  if(name.split(/\s+/).filter(Boolean).length>4){$('#project-error').textContent='Use up to 4 words in the group name.';event.currentTarget.elements.name.focus();return;}
+  try { const id=event.currentTarget.dataset.id;const payload=Object.fromEntries(new FormData(event.currentTarget));payload.name=name;const project=id?await patch(`/api/projects/${id}`,payload):await post('/api/projects',payload); $('#project-dialog').close(); await loadProjects(); if(id&&routeFromHash().name==='groups'&&Number(routeFromHash().id)===Number(project.id)){await renderProject(project.id);if(activeGroupChatId===project.id){const header=$('.thread-header h2');if(header)header.textContent=project.name;await loadConversations();renderConversations();}}else location.hash = `#/groups/${project.id}`; }
   catch (error) { $('#project-error').textContent = error.message; }
 });
 $('#delete-group').addEventListener('click',async()=>{if(!activeProject||!confirm(`Delete “${activeProject.name}” and all its shared assignments, messages, and history? This cannot be undone.`))return;try{await api(`/api/projects/${activeProject.id}`,{method:'DELETE'});$('#project-dialog').close();location.hash='#/groups';await loadProjects();}catch(error){$('#project-error').textContent=error.message;}});
@@ -585,7 +645,8 @@ function showGroupDescription(name,text) {
   $('h2',dialog).textContent=name;$('p',dialog).textContent=text||'';dialog.showModal();
 }
 
-$('#copy-join-code').addEventListener('click', async()=>{const code=$('#group-join-code').textContent;try{await navigator.clipboard.writeText(code);$('#copy-join-code').textContent='Copied';setTimeout(()=>$('#copy-join-code').textContent='Copy code',1400);}catch{const range=document.createRange();range.selectNodeContents($('#group-join-code'));getSelection().removeAllRanges();getSelection().addRange(range);}});
+let copyFeedbackTimer;
+$('#copy-join-code').addEventListener('click', async()=>{const button=$('#copy-join-code');const code=$('#group-join-code').textContent;try{if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(code);else{const fallback=document.createElement('textarea');fallback.value=code;fallback.setAttribute('readonly','');fallback.style.position='fixed';fallback.style.opacity='0';document.body.append(fallback);fallback.select();const copied=document.execCommand('copy');fallback.remove();if(!copied)throw new Error('Copy unavailable');}clearTimeout(copyFeedbackTimer);button.classList.add('is-copied');setIcon(button,'check');button.setAttribute('aria-label','Join code copied');button.title='Join code copied';$('#copy-feedback').textContent='Join code copied';copyFeedbackTimer=setTimeout(()=>{button.classList.remove('is-copied');setIcon(button,'copy');button.setAttribute('aria-label','Copy join code');button.title='Copy join code';$('#copy-feedback').textContent='';},1400);}catch{showMessage('Copy is unavailable in this browser. Select the code to copy it.');}});
 $('#rotate-join-code').addEventListener('click', async()=>{if(!activeProject||!confirm('Regenerate this code? The old code stops working immediately.'))return;try{const result=await post(`/api/projects/${activeProject.id}/join-code/rotate`,{});activeProject.join_code=result.code;$('#group-join-code').textContent=result.code;await loadProjects();}catch(error){showMessage(error.message);}});
 
 async function renderProject(projectId) {
@@ -594,26 +655,37 @@ async function renderProject(projectId) {
   const head = document.createElement('div'); head.className = 'project-detail-head';
   const hero = document.createElement('section'); hero.className='group-hero';
   const heroMain=document.createElement('div');heroMain.className='group-hero-main';
-  const heroAvatar=document.createElement('span');heroAvatar.className=`group-hero-avatar group-avatar-${activeProject.avatar||'violet'}`;heroAvatar.setAttribute('aria-hidden','true');heroAvatar.textContent=({violet:'✦',ocean:'≈',mint:'❋',coral:'✿',sun:'☼'})[activeProject.avatar]||'✦';
-  const titlebox = document.createElement('div');titlebox.className='group-hero-copy'; const title = document.createElement('h2'); title.textContent = activeProject.name;
+  const titlebox = document.createElement('div');titlebox.className='group-hero-copy';
+  const heroAvatar=document.createElement('span');heroAvatar.className=`group-hero-avatar group-avatar-${activeProject.avatar||'violet'}`;heroAvatar.setAttribute('aria-hidden','true');heroAvatar.innerHTML=iconMarkup('book');
+  const title = document.createElement('h2'); title.textContent = activeProject.name;
   const description = document.createElement('p');description.className='group-description';description.textContent=activeProject.description||'';
   const descriptionToggle=document.createElement('button');descriptionToggle.type='button';descriptionToggle.className='text-button group-description-toggle';descriptionToggle.textContent='Read more';descriptionToggle.hidden=!(activeProject.description||'').trim();descriptionToggle.setAttribute('aria-haspopup','dialog');descriptionToggle.addEventListener('click',()=>showGroupDescription(activeProject.name,activeProject.description));
   const stats=document.createElement('div');stats.className='group-hero-stats';
-  const memberStat=document.createElement('span');memberStat.className='group-stat';memberStat.innerHTML='<b aria-hidden="true">♙</b><strong></strong><span>members</span>';memberStat.querySelector('strong').textContent=String(activeProject.members.length);
-  const assignmentStat=document.createElement('span');assignmentStat.className='group-stat';assignmentStat.innerHTML='<b aria-hidden="true">▤</b><strong id="group-assignments-count">…</strong><span>assignments</span>';
-  const milestoneStat=document.createElement('span');milestoneStat.className='group-stat';milestoneStat.innerHTML='<b aria-hidden="true">◷</b><strong id="group-milestones-count">…</strong><span>milestones</span>';
-  stats.append(memberStat,assignmentStat,milestoneStat);titlebox.append(title,description,descriptionToggle,stats);heroMain.append(heroAvatar,titlebox);
-  const actions = document.createElement('div'); actions.className = 'page-actions';
-  const addTask = document.createElement('button'); addTask.className = 'primary-button'; addTask.textContent = '＋ Assignment'; addTask.hidden = activeProject.role === 'viewer'; addTask.addEventListener('click', () => openNewTask(activeProject));
-  const editGroup=document.createElement('button');editGroup.className='secondary-button';editGroup.textContent='✎ Edit group';editGroup.hidden=!['owner','admin'].includes(activeProject.role);editGroup.addEventListener('click',()=>{const form=$('#project-form');form.reset();form.dataset.id=String(activeProject.id);form.elements.name.value=activeProject.name;form.elements.description.value=activeProject.description||'';form.elements.avatar.value=activeProject.avatar||'violet';$('#project-dialog-title').textContent='Edit group';$('#save-group').textContent='Save changes';$('.dialog-danger-zone').hidden=activeProject.role!=='owner';$('#project-error').textContent='';$('#project-dialog').showModal();});
-  const invite = document.createElement('button'); invite.className = 'secondary-button'; invite.textContent = '♙+ Invite'; invite.title='Share a group join code';invite.hidden = !['owner','admin'].includes(activeProject.role); invite.addEventListener('click', async () => { $('#group-join-code').textContent = activeProject.join_code; await loadJoinRequests(activeProject.id); $('#invite-dialog').showModal(); });
-  const openChat = document.createElement('a'); openChat.className = 'secondary-button'; openChat.href = `#/messages?group=${activeProject.id}`; openChat.textContent = 'Open group chat';
-  const leave=document.createElement('button');leave.type='button';leave.className='secondary-button leave-group';leave.textContent='↪ Leave group';leave.addEventListener('click',async()=>{const owner=activeProject.role==='owner';if(owner&&activeProject.members.length>1){showMessage('Transfer ownership before leaving this group.');return;}const prompt=owner?`Delete “${activeProject.name}”? As the only member, leaving will delete this group and its shared work.`:`Leave “${activeProject.name}”?`;if(!confirm(prompt))return;try{await api(`/api/projects/${activeProject.id}/leave`,{method:'POST'});activeProject=null;location.hash='#/groups';await loadProjects();}catch(error){showMessage(error.message);}});
-  actions.append(addTask, editGroup, invite, openChat,leave);hero.append(heroMain,actions);head.append(hero);pane.append(head);
+  const memberStat=document.createElement('span');memberStat.className='group-stat';memberStat.innerHTML=`<b aria-hidden="true">${iconMarkup('group')}</b><strong></strong><span>members</span>`;memberStat.querySelector('strong').textContent=String(activeProject.members.length);
+  const assignmentStat=document.createElement('span');assignmentStat.className='group-stat';assignmentStat.innerHTML=`<b aria-hidden="true">${iconMarkup('assignments')}</b><strong id="group-assignments-count">…</strong><span>assignments</span>`;
+  const milestoneStat=document.createElement('span');milestoneStat.className='group-stat';milestoneStat.innerHTML=`<b aria-hidden="true">${iconMarkup('milestones')}</b><strong id="group-milestones-count">…</strong><span>milestones</span>`;
+  stats.append(memberStat,assignmentStat,milestoneStat);titlebox.append(heroAvatar,title,description,descriptionToggle);heroMain.append(titlebox,stats);
+  const actions = document.createElement('div'); actions.className = 'group-hero-actions';
+  const addTask = document.createElement('button'); addTask.className = 'primary-button'; addTask.innerHTML = `${iconMarkup('add')}<span>Assignment</span>`; addTask.hidden = activeProject.role === 'viewer'; addTask.addEventListener('click', () => openNewTask(activeProject));
+  const openChat = document.createElement('a'); openChat.className = 'primary-button'; openChat.href = `#/messages?group=${activeProject.id}`; openChat.innerHTML = `${iconMarkup('chat')}<span>Chat</span>`;
+  const menu=document.createElement('details');menu.className='group-actions-menu';
+  const trigger=document.createElement('summary');trigger.setAttribute('aria-label','More group actions');trigger.title='More group actions';trigger.innerHTML=iconMarkup('more');
+  const menuItems=document.createElement('div');menuItems.className='group-menu-items';
+  const editGroup=document.createElement('button');editGroup.type='button';editGroup.textContent='Edit group';editGroup.hidden=!['owner','admin'].includes(activeProject.role);editGroup.addEventListener('click',()=>{menu.open=false;const form=$('#project-form');form.reset();form.dataset.id=String(activeProject.id);form.elements.name.value=activeProject.name;form.elements.description.value=activeProject.description||'';form.elements.avatar.value=activeProject.avatar||'violet';$('#project-dialog-title').textContent='Edit group';$('#save-group').textContent='Save changes';$('.dialog-danger-zone').hidden=true;$('#project-error').textContent='';refreshCharacterCounters(form);$('#project-dialog').showModal();});
+  const invite = document.createElement('button'); invite.type='button';invite.textContent='Invite members';invite.hidden = !['owner','admin'].includes(activeProject.role); invite.addEventListener('click', async () => { menu.open=false;$('#group-join-code').textContent = activeProject.join_code; await loadJoinRequests(activeProject.id); $('#invite-dialog').showModal(); });
+  const leave=document.createElement('button');leave.type='button';leave.textContent='Leave group';leave.addEventListener('click',async()=>{menu.open=false;const owner=activeProject.role==='owner';if(owner&&activeProject.members.length>1){showMessage('Transfer ownership before leaving this group.');return;}const prompt=owner?`Delete “${activeProject.name}”? As the only member, leaving will delete this group and its shared work.`:`Leave “${activeProject.name}”?`;if(!confirm(prompt))return;try{await api(`/api/projects/${activeProject.id}/leave`,{method:'POST'});activeProject=null;location.hash='#/groups';await loadProjects();}catch(error){showMessage(error.message);}});
+  const remove=document.createElement('button');remove.type='button';remove.className='menu-danger';remove.textContent='Delete group';remove.hidden=activeProject.role!=='owner';remove.addEventListener('click',async()=>{menu.open=false;if(!confirm(`Delete “${activeProject.name}” and all shared assignments, messages, and history? This cannot be undone.`))return;try{await api(`/api/projects/${activeProject.id}`,{method:'DELETE'});activeProject=null;location.hash='#/groups';await loadProjects();}catch(error){showMessage(error.message);}});
+  menuItems.append(editGroup,invite,leave,remove);menu.append(trigger,menuItems);actions.append(addTask,openChat,menu);hero.append(heroMain,actions);head.append(hero);pane.append(head);
   const layout = document.createElement('div'); layout.className = 'group-workspace-grid';
   const plan = document.createElement('section'); plan.className = 'group-plan';
   const taskHeading = document.createElement('div'); taskHeading.className = 'subsection-heading'; const taskTitle = document.createElement('h3'); taskTitle.textContent = 'Shared assignments'; taskHeading.append(taskTitle); plan.append(taskHeading);
+  const boardTools=document.createElement('div');boardTools.className='board-tools group-board-tools';
+  const searchLabel=document.createElement('label');searchLabel.className='search-box';const search=document.createElement('input');search.id='group-task-search';search.type='search';search.placeholder='Search assignments';search.setAttribute('aria-label','Search group assignments');searchLabel.append(search);
+  const courseLabel=document.createElement('label');courseLabel.className='course-filter';const course=document.createElement('select');course.id='group-course-filter';course.setAttribute('aria-label','Filter group assignments by course');courseLabel.append(course);
+  const scopeLabel=document.createElement('label');scopeLabel.className='course-filter';const scope=document.createElement('select');scope.id='group-scope-filter';scope.setAttribute('aria-label','Filter group assignments');scope.replaceChildren(new Option('All assignments','all'),new Option('Mine','mine'),new Option('Group','group'));scopeLabel.append(scope);
+  boardTools.append(searchLabel,courseLabel,scopeLabel);plan.append(boardTools);
   const groupBoard = document.createElement('div'); groupBoard.id = 'group-task-board';groupBoard.dataset.focusStatus='all'; plan.append(groupBoard);
+  search.addEventListener('input',()=>renderFilteredGroupBoard(activeProject));course.addEventListener('change',()=>renderFilteredGroupBoard(activeProject));scope.addEventListener('change',()=>renderFilteredGroupBoard(activeProject));
   const sidebar = document.createElement('aside'); sidebar.className = 'group-sidebar';
   const memberPanel = document.createElement('section'); memberPanel.className = 'group-panel'; const memberHead=document.createElement('div');memberHead.className='group-panel-heading';const memberTitle=document.createElement('h3');memberTitle.textContent='Your team';const memberCountBadge=document.createElement('span');memberCountBadge.className='panel-count';memberCountBadge.textContent=String(activeProject.members.length);memberHead.append(memberTitle,memberCountBadge);memberPanel.append(memberHead);
   activeProject.members.forEach((member) => {
@@ -641,9 +713,19 @@ async function renderProject(projectId) {
 async function loadProjectBoard(project) {
   if (!project) return;
   const items = await loadTasks(project.id);
-  const board = $('#group-task-board');
-  if (board) renderBoard(board, items, project, board.dataset.focusStatus||'all', items);
+  groupBoardItems = items;
+  const course=$('#group-course-filter');
+  if(course){const chosen=course.value;const courses=[...new Set(items.map(task=>task.course).filter(Boolean))].sort();course.replaceChildren(new Option('All courses',''),...courses.map(value=>new Option(value,value)));course.value=courses.includes(chosen)?chosen:'';}
+  renderFilteredGroupBoard(project);
   const count=$('#group-assignments-count');if(count&&activeProject&&Number(activeProject.id)===Number(project.id))count.textContent=String(items.length);
+}
+
+function renderFilteredGroupBoard(project) {
+  const board=$('#group-task-board');if(!board||!project)return;
+  const query=($('#group-task-search')?.value||'').trim().toLocaleLowerCase();
+  const course=$('#group-course-filter')?.value||'';const scope=$('#group-scope-filter')?.value||'all';
+  const filtered=groupBoardItems.filter(task=>{const mine=(task.assignees||[]).some(person=>Number(person.id)===Number(user.id));return(!query||`${task.title} ${task.course||''}`.toLocaleLowerCase().includes(query))&&(!course||task.course===course)&&(scope==='all'||scope==='group'||mine);});
+  renderBoard(board,filtered,project,board.dataset.focusStatus||'all',groupBoardItems);
 }
 
 async function loadMilestones(projectId) {
