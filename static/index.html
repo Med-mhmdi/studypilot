@@ -6,7 +6,7 @@
 
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f6f7fb">
 
-  <title>StudyPilot</title><link rel="icon" type="image/png" sizes="64x64" href="/static/favicon.png?v=12"><link rel="icon" href="/static/favicon.ico?v=12"><link rel="shortcut icon" href="/static/favicon.ico?v=12"><link rel="stylesheet" href="/static/styles.css?v=22"><link rel="stylesheet" href="/static/stabilization.css?v=22">
+  <title>StudyPilot</title><link rel="icon" type="image/png" sizes="64x64" href="/static/favicon.png?v=12"><link rel="icon" href="/static/favicon.ico?v=12"><link rel="shortcut icon" href="/static/favicon.ico?v=12"><link rel="stylesheet" href="/static/styles.css?v=25"><link rel="stylesheet" href="/static/stabilization.css?v=25">
 
 </head>
 
@@ -26,7 +26,7 @@
 
       <section id="view-groups" class="view"><div class="page-heading"><div><h1>Study groups</h1></div><div class="page-actions"><button class="secondary-button" id="join-group-open">Join with code</button><button class="primary-button" id="new-project">＋ New group</button></div></div><div id="projects-grid" class="projects-grid"></div><section id="project-detail" class="project-detail" hidden></section></section>
 
-      <section id="view-calendar" class="view"><div class="page-heading"><div><p class="eyebrow">SEE WHAT’S COMING</p><h1>Calendar</h1></div><div class="calendar-controls"><button class="icon-button" id="month-prev" aria-label="Previous month">‹</button><h2 id="calendar-month"></h2><button class="icon-button" id="month-next" aria-label="Next month">›</button></div></div><section class="calendar-card"><div class="calendar-weekdays"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div><div id="calendar-grid" class="calendar-grid"></div></section></section>
+      <section id="view-calendar" class="view"><div class="page-heading"><div><p class="eyebrow">SEE WHAT’S COMING</p><h1>Calendar</h1></div><div class="calendar-toolbar"><div class="calendar-scope" role="group" aria-label="Calendar assignment scope"><button type="button" class="active" data-calendar-scope="all" aria-pressed="true">All</button><button type="button" data-calendar-scope="personal" aria-pressed="false">Personal</button><button type="button" data-calendar-scope="group" aria-pressed="false">Group</button></div><div class="calendar-controls"><button class="icon-button calendar-arrow" id="month-prev" aria-label="Previous month">‹</button><div class="calendar-month-wrap"><button type="button" id="calendar-month" aria-haspopup="dialog" aria-expanded="false"></button><div id="calendar-month-picker" class="calendar-month-picker" role="dialog" aria-label="Choose month and year" hidden></div></div><button class="icon-button calendar-arrow" id="month-next" aria-label="Next month">›</button><button type="button" class="today-button" id="calendar-today">Today</button></div></div></div><section class="calendar-card"><div class="calendar-weekdays"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div><div id="calendar-grid" class="calendar-grid"></div></section></section>
 
       <section id="view-messages" class="view"><div class="page-heading"><div><h1>Messages</h1></div><a class="secondary-button find-classmates-button" href="#/people" aria-label="Find classmates"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="8" r="3.5"/><path d="M3.5 20v-1a7 7 0 0 1 12.7-4M17 17h5m-2.5-2.5v5"/></svg><span>Find classmates</span></a></div><section class="inbox"><aside class="inbox-sidebar"><label class="search-box inbox-search"><span aria-hidden="true">⌕</span><input id="conversation-search" type="search" placeholder="Search conversations" aria-label="Search conversations"></label><aside id="conversation-list" class="conversation-list" aria-label="Conversations"></aside></aside><section id="direct-thread" class="direct-thread"><div class="thread-empty"><h2>Your conversations</h2><p>Select a group or classmate to open a chat.</p></div></section></section></section>
 
@@ -54,6 +54,6 @@
 
   <dialog id="notifications-dialog"><section class="notifications-panel"><div class="dialog-head"><div><h2>Notifications</h2></div><button type="button" class="icon-button" data-close="notifications-dialog" aria-label="Close">×</button></div><div class="notification-toolbar"><label><input id="notification-select-all" type="checkbox"> Select all</label><span id="notification-selection-count">0 selected</span><button id="notification-delete-selected" class="secondary-button" disabled>Delete selected</button><button id="notification-clear-all" class="danger-button">Clear all</button></div><div id="notifications-list" class="notifications-list" aria-live="polite"></div></section></dialog>
 
-  <script src="/static/app.js?v=22" defer></script>
+  <script src="/static/app.js?v=25" defer></script>
 
 </body></html>

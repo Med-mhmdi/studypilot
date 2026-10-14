@@ -403,6 +403,27 @@ def test_assignment_scope_filters_and_group_avatar_permissions(tmp_path, monkeyp
         assert owner.patch(f"/api/projects/{project['id']}", json={"name":"Study circle", "avatar":"file-path"}).status_code == 422
 
 
+def test_calendar_rescheduling_enforces_task_write_permissions(tmp_path, monkeypatch):
+    database = tmp_path / "calendar-reschedule.db"
+    with client_for(database, monkeypatch) as owner:
+        register(owner, "calendar-owner@example.edu", "Calendar Owner")
+        project = owner.post("/api/projects", json={"name":"Calendar group"}).json()
+        task = owner.post("/api/tasks", json={
+            "title":"Move the lab report", "due_date":"2026-10-21", "project_id":project["id"],
+        }).json()
+        with TestClient(app) as viewer:
+            register(viewer, "calendar-viewer@example.edu", "Calendar Viewer")
+            join_group(owner, viewer, project)
+            with sqlite3.connect(database) as con:
+                con.execute("UPDATE project_members SET legacy_readonly=1 WHERE project_id=? AND user_id=2", (project["id"],))
+            denied = viewer.patch(f"/api/tasks/{task['id']}", json={"due_date":"2026-11-02"})
+            assert denied.status_code == 403
+            assert owner.patch(f"/api/tasks/{task['id']}", json={"due_date":"2026-11-02"}).json()["due_date"] == "2026-11-02"
+        with TestClient(app) as stranger:
+            register(stranger, "calendar-stranger@example.edu", "Calendar Stranger")
+            assert stranger.patch(f"/api/tasks/{task['id']}", json={"due_date":"2026-11-03"}).status_code == 404
+
+
 def test_legacy_group_roles_migrate_without_granting_old_viewers_write_access(tmp_path, monkeypatch):
     path=tmp_path/"legacy-roles.db"
     with sqlite3.connect(path) as con:

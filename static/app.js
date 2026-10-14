@@ -14,6 +14,9 @@ let activeProject = null;
 let activeConversation = null;
 let pendingConversationId = null;
 let calendarCursor = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+let calendarScope = 'all';
+let calendarClickTimer = null;
+let calendarSuppressClickUntil = 0;
 let pollTimer = null;
 let lastGroupMessageId = 0;
 let lastDirectMessageId = 0;
@@ -281,7 +284,8 @@ async function renderRoute() {
       if (route.id) { await renderProject(route.id); if(route.query.get('requests')==='1'&&['owner','admin'].includes(activeProject?.role)){await loadJoinRequests(route.id);$('#invite-dialog').showModal();} }
     }
     if (route.name === 'calendar') {
-      await Promise.all([loadTasks(), loadProjects()]);
+      tasks = await api('/api/tasks?scope=all');
+      await loadProjects();
       await loadCalendarMilestones();
       renderCalendar();
     }
@@ -517,7 +521,7 @@ async function changeTaskStatus(task, status, project) {
   }
 }
 
-function openNewTask(project) {
+function openNewTask(project, dueDate = null) {
   taskForm.reset();
   $('#task-id').value = '';
   $('#task-dialog-title').textContent = project ? `New assignment · ${project.name}` : 'New assignment';
@@ -531,7 +535,7 @@ function openNewTask(project) {
   $('#assignee-wrap').hidden = !project;
   populateAssignees(project, []);
   const now = new Date();
-  $('#due-date').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  $('#due-date').value = dueDate || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   taskForm.dataset.projectId = project?.id || '';
   $('#task-dialog').showModal();
   $('#title').focus();
@@ -587,8 +591,9 @@ taskForm.addEventListener('submit', async (event) => {
   try {
     await api(id ? `/api/tasks/${id}` : '/api/tasks', { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
     $('#task-dialog').close();
-    await loadTasks();
-    if (routeFromHash().name === 'groups' && routeFromHash().id) await renderProject(routeFromHash().id);
+    if (routeFromHash().name === 'calendar') tasks = await api('/api/tasks?scope=all'); else await loadTasks();
+    if (routeFromHash().name === 'calendar') renderCalendar();
+    else if (routeFromHash().name === 'groups' && routeFromHash().id) await renderProject(routeFromHash().id);
     else if (routeFromHash().name === 'board') renderBoardView();
     else renderDashboard();
   } catch (error) { $('#form-error').textContent = error.message; }
@@ -602,8 +607,9 @@ $('#delete-task').addEventListener('click', async () => {
   try {
     await api(`/api/tasks/${id}`, { method: 'DELETE' });
     $('#task-dialog').close();
-    await loadTasks();
-    if (routeFromHash().name === 'groups' && routeFromHash().id) await renderProject(routeFromHash().id);
+    if (routeFromHash().name === 'calendar') tasks = await api('/api/tasks?scope=all'); else await loadTasks();
+    if (routeFromHash().name === 'calendar') renderCalendar();
+    else if (routeFromHash().name === 'groups' && routeFromHash().id) await renderProject(routeFromHash().id);
     else if (routeFromHash().name === 'board') renderBoardView();
     else renderDashboard();
   } catch (error) { $('#form-error').textContent = error.message; }
@@ -626,7 +632,7 @@ async function renderCommentPanel(panel, task, project) {
   if(!comments.length){const empty=document.createElement('p');empty.className='comment-empty';empty.textContent='No comments yet.';stream.append(empty);}
   comments.forEach(comment=>{
     const row=document.createElement('article');row.className='comment-item';const copy=document.createElement('div');copy.className='comment-copy';const meta=document.createElement('div');meta.className='comment-meta';const by=document.createElement('strong');by.textContent=comment.name;const when=document.createElement('small');when.textContent=`${formatTimestamp(comment.created_at)}${comment.edited_at?' · edited':''}`;meta.append(by,when);const body=document.createElement('p');body.textContent=comment.body;copy.append(meta,body);row.append(copy);
-    if(Number(comment.user_id)===Number(user?.id)&&project?.role!=='viewer'&&!project?.legacy_readonly){const actions=document.createElement('details');actions.className='comment-menu';const trigger=document.createElement('summary');setIcon(trigger,'more');trigger.setAttribute('aria-label','Comment actions');const menu=document.createElement('div');menu.className='comment-menu-items';const edit=document.createElement('button');edit.type='button';edit.textContent='Edit';edit.addEventListener('click',async()=>{actions.open=false;const input=document.createElement('textarea');input.className='comment-edit-input';input.value=comment.body;input.maxLength=2000;const save=document.createElement('button');save.type='button';save.className='secondary-button';save.textContent='Save';const cancel=document.createElement('button');cancel.type='button';cancel.className='text-button';cancel.textContent='Cancel';copy.replaceChildren(meta,input);row.append(save,cancel);cancel.addEventListener('click',()=>renderCommentPanel(panel,task,project).catch(error=>showMessage(error.message)));save.addEventListener('click',async()=>{try{await patch(`/api/tasks/${task.id}/comments/${comment.id}`,{body:input.value});await renderCommentPanel(panel,task,project);}catch(error){showMessage(error.message);}});});const remove=document.createElement('button');remove.type='button';remove.textContent='Delete';remove.addEventListener('click',async()=>{actions.open=false;if(!await requestConfirmation({title:'Delete comment?',message:'This comment will be removed.',confirmLabel:'Delete comment',danger:true}))return;try{await api(`/api/tasks/${task.id}/comments/${comment.id}`,{method:'DELETE'});await renderCommentPanel(panel,task,project);}catch(error){showMessage(error.message);}});menu.append(edit,remove);actions.append(trigger,menu);row.append(actions);}
+    if(Number(comment.user_id)===Number(user?.id)&&project?.role!=='viewer'&&!project?.legacy_readonly){const actions=document.createElement('div');actions.className='comment-actions';const edit=document.createElement('button');edit.type='button';edit.className='icon-button';setIcon(edit,'edit');edit.title='Edit comment';edit.setAttribute('aria-label','Edit comment');edit.addEventListener('click',()=>{const input=document.createElement('textarea');input.className='comment-edit-input';input.value=comment.body;input.maxLength=2000;const controls=document.createElement('div');controls.className='comment-edit-controls';const save=document.createElement('button');save.type='button';save.className='icon-button';setIcon(save,'check');save.title='Save comment';save.setAttribute('aria-label','Save comment');const cancel=document.createElement('button');cancel.type='button';cancel.className='icon-button';setIcon(cancel,'close');cancel.title='Cancel edit';cancel.setAttribute('aria-label','Cancel edit');copy.replaceChildren(meta,input,controls);controls.append(cancel,save);cancel.addEventListener('click',()=>renderCommentPanel(panel,task,project).catch(error=>showMessage(error.message)));save.addEventListener('click',async()=>{save.disabled=true;try{await patch(`/api/tasks/${task.id}/comments/${comment.id}`,{body:input.value});await renderCommentPanel(panel,task,project);}catch(error){save.disabled=false;showMessage(error.message);}});input.focus();});const remove=document.createElement('button');remove.type='button';remove.className='icon-button comment-delete';setIcon(remove,'trash');remove.title='Delete comment';remove.setAttribute('aria-label','Delete comment');remove.addEventListener('click',async()=>{if(!await requestConfirmation({title:'Delete comment?',message:'This comment will be removed.',confirmLabel:'Delete comment',danger:true}))return;try{await api(`/api/tasks/${task.id}/comments/${comment.id}`,{method:'DELETE'});await renderCommentPanel(panel,task,project);}catch(error){showMessage(error.message);}});actions.append(edit,remove);row.append(actions);}
     stream.append(row);
   });
   panel.append(stream);
@@ -845,34 +851,60 @@ function closeOtherMenus(keep){$$('details[open]').forEach(menu=>{if(menu!==keep
 
 function renderCalendar() {
   const year = calendarCursor.getFullYear(); const month = calendarCursor.getMonth();
-  $('#calendar-month').textContent = calendarCursor.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  const heading = $('#calendar-month');
+  heading.textContent = calendarCursor.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  $$('[data-calendar-scope]').forEach(button => { const selected=button.dataset.calendarScope===calendarScope;button.classList.toggle('active',selected);button.setAttribute('aria-pressed',String(selected)); });
+  const scopedTasks = tasks.filter(task => calendarScope === 'all' || (calendarScope === 'personal' ? !task.project_id : Boolean(task.project_id)));
+  const scopedMilestones = calendarScope === 'personal' ? [] : calendarMilestones;
   const grid = $('#calendar-grid'); grid.replaceChildren();
   const first = new Date(year, month, 1); const offset = (first.getDay() + 6) % 7; const start = new Date(year, month, 1 - offset);
   for (let i = 0; i < 42; i++) {
     const date = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
-    const cell = document.createElement('div'); cell.className = `calendar-day ${date.getMonth() !== month ? 'outside' : ''} ${date.toDateString() === todayLocal().toDateString() ? 'today' : ''}`;
+    const dateKey = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+    const cell = document.createElement('div'); cell.className = `calendar-day ${date.getMonth() !== month ? 'outside' : ''} ${date.toDateString() === todayLocal().toDateString() ? 'today' : ''}`;cell.dataset.date=dateKey;cell.setAttribute('aria-label',date.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric',year:'numeric'}));
     const number = document.createElement('span'); number.className = 'day-number'; number.textContent = date.getDate(); cell.append(number);
-    const matching = tasks.filter((task) => dateOnly(task.due_date)?.toDateString() === date.toDateString());
-    const milestones = calendarMilestones.filter((milestone) => dateOnly(milestone.due_date)?.toDateString() === date.toDateString());
+    const matching = scopedTasks.filter((task) => task.due_date === dateKey);
+    const milestones = scopedMilestones.filter((milestone) => milestone.due_date === dateKey);
     const events = [...matching.map((task) => ({ kind: 'task', value: task })), ...milestones.map((milestone) => ({ kind: 'milestone', value: milestone }))];
     events.slice(0, 3).forEach(({ kind, value }) => {
-      const event = document.createElement('button');
-      event.className = kind === 'task' ? `calendar-event ${value.status}` : 'calendar-event milestone-event';
+      const event = document.createElement('button');event.type='button';
+      const overdue = kind==='task' && isOverdue(value);
+      event.className = kind === 'task' ? `calendar-event ${value.status}${overdue?' overdue':''}` : 'calendar-event milestone-event';
       event.textContent = kind === 'task' ? value.title : `◆ ${value.title}`;
-      event.title = kind === 'task' ? `${value.title} · ${statusNames[value.status]}` : `${value.project_name} · milestone`;
-      event.addEventListener('click', () => {
-        if (kind === 'milestone' || value.project_id) location.hash = `#/groups/${value.project_id}`;
-        else { location.hash = '#/dashboard'; setTimeout(() => openEditTask(value, null), 0); }
-      });
+      event.title = kind === 'task' ? `${value.title} · ${overdue?'Overdue':statusNames[value.status]}` : `${value.project_name} · milestone`;
+      event.setAttribute('aria-label',kind==='task'?`${value.title}, ${overdue?'overdue':statusNames[value.status]}. Click to view, double-click to edit.`:`${value.project_name}: ${value.title}, milestone`);
+      if(kind==='task'){
+        const editable=calendarCanEdit(value);event.draggable=editable;if(editable)event.dataset.draggable='true';
+        event.addEventListener('click',()=>{if(Date.now()<calendarSuppressClickUntil)return;if(calendarClickTimer)clearTimeout(calendarClickTimer);calendarClickTimer=setTimeout(()=>{calendarClickTimer=null;showCalendarTask(value);},240);});
+        event.addEventListener('dblclick',event=>{event.preventDefault();if(Date.now()<calendarSuppressClickUntil)return;if(calendarClickTimer)clearTimeout(calendarClickTimer);calendarClickTimer=null;if(calendarCanEdit(value))openEditTask(value,calendarProject(value));else showCalendarTask(value);});
+        event.addEventListener('dragstart',event=>{if(!editable){event.preventDefault();return;}calendarSuppressClickUntil=Date.now()+700;event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',String(value.id));requestAnimationFrame(()=>event.currentTarget.classList.add('dragging'));});
+        event.addEventListener('dragend',()=>{event.classList.remove('dragging');calendarSuppressClickUntil=Date.now()+700;});
+      } else event.addEventListener('click',()=>{if(calendarClickTimer)clearTimeout(calendarClickTimer);location.hash=`#/groups/${value.project_id}`;});
       cell.append(event);
     });
-    if (events.length > 3) { const more = document.createElement('small'); more.textContent = `+${events.length - 3} more`; cell.append(more); }
+    if (events.length > 3) { const more = document.createElement('button');more.type='button';more.className='calendar-more';more.textContent = `+${events.length - 3} more`;more.setAttribute('aria-label',`Show ${events.length-3} more items for ${date.toLocaleDateString(undefined,{month:'long',day:'numeric'})}`);more.addEventListener('click',event=>{event.stopPropagation();showCalendarOverflow(date,events.slice(3));});cell.append(more); }
+    cell.addEventListener('dragover',event=>{if(event.dataTransfer.types.includes('text/plain')){event.preventDefault();event.dataTransfer.dropEffect='move';cell.classList.add('drop-target');}});
+    cell.addEventListener('dragleave',event=>{if(!cell.contains(event.relatedTarget))cell.classList.remove('drop-target');});
+    cell.addEventListener('drop',async event=>{event.preventDefault();cell.classList.remove('drop-target');const id=Number(event.dataTransfer.getData('text/plain'));const task=tasks.find(item=>Number(item.id)===id);if(!task||!calendarCanEdit(task)||task.due_date===dateKey)return;calendarSuppressClickUntil=Date.now()+800;await rescheduleCalendarTask(task,dateKey);});
+    cell.addEventListener('click',event=>{if(event.target.closest('button,.calendar-more'))return;openNewTask(null,dateKey);});
     grid.append(cell);
   }
 }
 
 $('#month-prev').addEventListener('click', () => { calendarCursor = new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() - 1, 1); renderCalendar(); });
 $('#month-next').addEventListener('click', () => { calendarCursor = new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() + 1, 1); renderCalendar(); });
+$('#calendar-today').addEventListener('click',()=>{calendarCursor=new Date(todayLocal().getFullYear(),todayLocal().getMonth(),1);renderCalendar();});
+
+function calendarProject(task){return task.project_id?projects.find(project=>Number(project.id)===Number(task.project_id))||null:null;}
+function calendarCanEdit(task){if(!task.project_id)return Number(task.owner_id)===Number(user?.id);const project=calendarProject(task);return Boolean(project&&project.role!=='viewer'&&!project.legacy_readonly);}
+function showCalendarTask(task){let dialog=$('#calendar-view-dialog');if(!dialog){dialog=document.createElement('dialog');dialog.id='calendar-view-dialog';document.body.append(dialog);}const project=calendarProject(task);dialog.replaceChildren();const panel=document.createElement('section');panel.className='calendar-view-panel';const head=document.createElement('div');head.className='dialog-head';const title=document.createElement('h2');title.textContent=task.title;const close=document.createElement('button');close.type='button';close.className='icon-button';close.setAttribute('aria-label','Close assignment details');setIcon(close,'close');close.addEventListener('click',()=>dialog.close());head.append(title,close);panel.append(head);const details=document.createElement('dl');details.className='calendar-task-details';[['Course',task.course||'—'],['Due date',formatDate(task.due_date)],['Status',statusNames[task.status]||task.status],['Priority',task.priority],...(project?[['Study group',project.name]]:[])].forEach(([label,value])=>{const row=document.createElement('div');const dt=document.createElement('dt');dt.textContent=label;const dd=document.createElement('dd');dd.textContent=value;row.append(dt,dd);details.append(row);});panel.append(details);if(task.description){const notes=document.createElement('p');notes.className='calendar-task-notes';notes.textContent=task.description;panel.append(notes);}const actions=document.createElement('div');actions.className='dialog-actions';const dismiss=document.createElement('button');dismiss.type='button';dismiss.className='secondary-button';dismiss.textContent='Close';dismiss.addEventListener('click',()=>dialog.close());actions.append(dismiss);if(calendarCanEdit(task)){const reschedule=document.createElement('button');reschedule.type='button';reschedule.className='secondary-button';reschedule.textContent='Reschedule';reschedule.addEventListener('click',()=>{const form=document.createElement('form');form.className='calendar-reschedule';const label=document.createElement('label');label.className='field';label.textContent='New due date';const date=document.createElement('input');date.type='date';date.required=true;date.value=task.due_date;label.append(date);const cancel=document.createElement('button');cancel.type='button';cancel.className='secondary-button';cancel.textContent='Cancel';const save=document.createElement('button');save.type='submit';save.className='primary-button';save.textContent='Review change';form.append(label,cancel,save);cancel.addEventListener('click',()=>form.remove());form.addEventListener('submit',async event=>{event.preventDefault();await rescheduleCalendarTask(task,date.value);});actions.replaceChildren(dismiss);panel.append(form);date.focus();});actions.append(reschedule);}panel.append(actions);dialog.append(panel);dialog.showModal();}
+async function rescheduleCalendarTask(task,dateKey){if(!calendarCanEdit(task))return;if(!await requestConfirmation({title:'Reschedule assignment?',message:`Move “${task.title}” from ${formatDate(task.due_date)} to ${formatDate(dateKey)}?`,confirmLabel:'Reschedule'}))return;try{await patch(`/api/tasks/${task.id}`,{due_date:dateKey});if($('#calendar-view-dialog')?.open)$('#calendar-view-dialog').close();tasks=await api('/api/tasks?scope=all');renderCalendar();showMessage('Assignment rescheduled.','success');}catch(error){showMessage(error.message);}}
+function showCalendarOverflow(date,items){let dialog=$('#calendar-overflow-dialog');if(!dialog){dialog=document.createElement('dialog');dialog.id='calendar-overflow-dialog';document.body.append(dialog);}dialog.replaceChildren();const panel=document.createElement('section');panel.className='calendar-overflow-panel';const head=document.createElement('div');head.className='dialog-head';const title=document.createElement('h2');title.textContent=date.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'});const close=document.createElement('button');close.type='button';close.className='icon-button';close.setAttribute('aria-label','Close day assignments');setIcon(close,'close');close.addEventListener('click',()=>dialog.close());head.append(title,close);const list=document.createElement('div');list.className='calendar-overflow-list';items.forEach(({kind,value})=>{const button=document.createElement('button');button.type='button';button.className=`calendar-overflow-item ${kind==='task'?(isOverdue(value)?'overdue':value.status):'milestone-event'}`;const name=document.createElement('strong');name.textContent=kind==='task'?value.title:`◆ ${value.title}`;const meta=document.createElement('small');meta.textContent=kind==='task'?`${value.course||'Assignment'} · ${isOverdue(value)?'Overdue':statusNames[value.status]||value.status}`:`${value.project_name} · Milestone`;button.append(name,meta);button.addEventListener('click',()=>{dialog.close();if(kind==='task')showCalendarTask(value);else location.hash=`#/groups/${value.project_id}`;});list.append(button);});panel.append(head,list);dialog.append(panel);dialog.showModal();}
+function openCalendarMonthPicker(){const picker=$('#calendar-month-picker');if(!picker.hidden){picker.hidden=true;$('#calendar-month').setAttribute('aria-expanded','false');return;}picker.replaceChildren();const yearRow=document.createElement('div');yearRow.className='calendar-year-row';const yearLabel=document.createElement('label');yearLabel.textContent='Year';yearLabel.htmlFor='calendar-year-input';const year=document.createElement('input');year.id='calendar-year-input';year.type='number';year.min='1900';year.max='2100';year.value=String(calendarCursor.getFullYear());year.setAttribute('aria-label','Calendar year');yearLabel.append(year);yearRow.append(yearLabel);const months=document.createElement('div');months.className='calendar-month-options';const monthNames=Array.from({length:12},(_,index)=>new Date(2024,index,1).toLocaleDateString(undefined,{month:'short'}));monthNames.forEach((name,index)=>{const button=document.createElement('button');button.type='button';button.textContent=name;button.className=index===calendarCursor.getMonth()?'selected':'';button.addEventListener('click',()=>{calendarCursor=new Date(Number(year.value)||calendarCursor.getFullYear(),index,1);picker.hidden=true;$('#calendar-month').setAttribute('aria-expanded','false');renderCalendar();});months.append(button);});year.addEventListener('change',()=>{const next=Math.max(1900,Math.min(2100,Number(year.value)||calendarCursor.getFullYear()));year.value=String(next);calendarCursor=new Date(next,calendarCursor.getMonth(),1);renderCalendar();});picker.append(yearRow,months);picker.hidden=false;$('#calendar-month').setAttribute('aria-expanded','true');year.focus();}
+$('#calendar-month').addEventListener('click',openCalendarMonthPicker);
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('#calendar-month-picker').hidden){$('#calendar-month-picker').hidden=true;$('#calendar-month').setAttribute('aria-expanded','false');$('#calendar-month').focus();}});
+document.addEventListener('click',event=>{const picker=$('#calendar-month-picker');if(!picker.hidden&&!event.target.closest('.calendar-month-wrap')){picker.hidden=true;$('#calendar-month').setAttribute('aria-expanded','false');}});
+$$('[data-calendar-scope]').forEach(button=>button.addEventListener('click',()=>{calendarScope=button.dataset.calendarScope;renderCalendar();}));
 
 async function renderInbox() {
   await Promise.all([loadProjects(), loadConversations()]);
