@@ -59,7 +59,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
-    return FileResponse("static/favicon.svg", media_type="image/svg+xml",
+    return FileResponse("static/favicon.ico", media_type="image/vnd.microsoft.icon",
                         headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
@@ -537,6 +537,20 @@ def update_milestone(project_id: int, milestone_id: int, body: MilestoneUpdate, 
         con.execute(f"UPDATE milestones SET {fields} WHERE id=? AND project_id=?", [*changes.values(), milestone_id, project_id])
         _log_activity(con, project_id, user["id"], "milestone_updated", f"updated milestone {row['title']}")
         return dict(con.execute("SELECT * FROM milestones WHERE id=?", (milestone_id,)).fetchone())
+
+
+@app.delete("/api/projects/{project_id}/milestones/{milestone_id}", status_code=204)
+def delete_milestone(project_id: int, milestone_id: int, user: User):
+    with db.connect() as con:
+        membership = _membership(con, project_id, user["id"])
+        if membership["role"] not in {"owner", "admin"} or membership["legacy_readonly"]:
+            raise HTTPException(status_code=403, detail="admin access is required")
+        row = con.execute("SELECT title FROM milestones WHERE id=? AND project_id=?", (milestone_id, project_id)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="milestone not found")
+        con.execute("DELETE FROM milestones WHERE id=? AND project_id=?", (milestone_id, project_id))
+        _log_activity(con, project_id, user["id"], "milestone_deleted", f"deleted milestone {row['title']}")
+    return Response(status_code=204)
 
 
 @app.get("/api/tasks")

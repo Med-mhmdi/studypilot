@@ -140,6 +140,8 @@ def test_group_workspace_tasks_status_transitions_and_chat_timestamps(tmp_path, 
             assert milestone.status_code == 201
             assert teammate.get(f"/api/projects/{project['id']}/milestones").json()[0]["title"] == "Submit draft"
             assert teammate.patch(f"/api/projects/{project['id']}/milestones/{milestone.json()['id']}", json={"status": "done"}).status_code == 200
+            assert teammate.delete(f"/api/projects/{project['id']}/milestones/{milestone.json()['id']}").status_code == 403
+            assert owner.delete(f"/api/projects/{project['id']}/milestones/{milestone.json()['id']}").status_code == 204
         owned_group_tasks = owner.get(f"/api/tasks?project_id={project['id']}").json()
         assert len(owned_group_tasks) == 1 and owned_group_tasks[0]["id"] == task["id"]
 
@@ -574,28 +576,34 @@ def test_v11_group_and_bounded_text_limits_are_enforced_on_create_and_edit(tmp_p
         assert client.post("/api/tasks", json={"title": "t" * 161, "due_date": "2026-10-25"}).status_code == 422
 
 
-def test_v11_group_ui_limits_copy_feedback_and_shared_board_contract():
+def test_v12_group_ui_limits_copy_feedback_and_shared_board_contract():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
     html = (root / "static" / "index.html").read_text(encoding="utf-8")
     script = (root / "static" / "app.js").read_text(encoding="utf-8")
     styles = (root / "static" / "styles.css").read_text(encoding="utf-8")
-    favicon = (root / "static" / "favicon.svg").read_text(encoding="utf-8")
+    stabilization = (root / "static" / "stabilization.css").read_text(encoding="utf-8")
+    favicon = root / "static" / "favicon.png"
     assert 'maxlength="40"' in html
     assert "Milestone title (max 40 characters)" in html
-    assert 'href="/static/favicon.svg?v=11"' in html
+    assert 'href="/static/favicon.ico?v=12"' in html and favicon.is_file()
     assert "renderBoard(board,filtered,project" in script
     assert "setIcon(button,'check')" in script and "button.classList.add('is-copied')" in script
     assert "group-plan .board-lanes{grid-template-columns:repeat(4,minmax(0,1fr))" in styles
     assert "-webkit-line-clamp:2" in styles
-    assert "#1684FF" in favicon and "studypilot-airplane" not in favicon
+    assert "#1684FF" in (root / "static" / "favicon.svg").read_text(encoding="utf-8")
+    assert "progress-legend" in html and "progress-track .progress-segment" in stabilization
+    assert "background-image: none" in stabilization and "linear-gradient(90deg,#8175e9,#48b592)" not in styles
+    assert "message-bubble-row" in stabilization and "pinned-heading" in stabilization
+    assert "requestConfirmation" in script and "function renderPinnedMessages" in script
+    assert "confirm(" not in script and "alert(" not in script
 
 
-def test_favicon_fallback_serves_the_airplane_svg_without_stale_caching(tmp_path, monkeypatch):
+def test_favicon_fallback_serves_the_mark_only_icon_without_stale_caching(tmp_path, monkeypatch):
     with client_for(tmp_path / "favicon.db", monkeypatch) as client:
         response = client.get("/favicon.ico")
         assert response.status_code == 200
-        assert response.headers["content-type"].startswith("image/svg+xml")
+        assert response.headers["content-type"].startswith("image/vnd.microsoft.icon")
         assert response.headers["cache-control"] == "no-cache, must-revalidate"
-        assert "#1684FF" in response.text
+        assert response.content[:4] == b"\x00\x00\x01\x00"

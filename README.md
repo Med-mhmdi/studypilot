@@ -28,7 +28,7 @@ Open <http://127.0.0.1:8000>. SQLite is stored at `data/studypilot.db`. The serv
 For an isolated local preview on port **8765**, use a separate SQLite filename so your normal database stays untouched. If port 8765 is occupied, identify the owning process before stopping it; do not terminate an unrelated service.
 
 ```powershell
-$env:DB_PATH = "data/studypilot-v6-preview.db"
+$env:DB_PATH = "data/studypilot-v12-preview.db"
 $env:SESSION_SECRET = "local-preview-key-change-before-hosting"
 $env:COOKIE_SECURE = "false"
 uvicorn app.main:app --host 127.0.0.1 --port 8765
