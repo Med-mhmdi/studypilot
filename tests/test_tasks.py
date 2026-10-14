@@ -562,14 +562,14 @@ def test_v11_group_and_bounded_text_limits_are_enforced_on_create_and_edit(tmp_p
         register(client)
         group = client.post("/api/projects", json={"name": "Modern Biology Study Team"})
         assert group.status_code == 201
-        assert len(group.json()["name"]) <= 40
+        assert len(group.json()["name"]) <= 50
         forty_char_name = "One Two Three abcdefghijklmnopqrstuvwxyz"
         assert len(forty_char_name) == 40
         assert client.post("/api/projects", json={"name": forty_char_name}).status_code == 201
-        assert client.post("/api/projects", json={"name": "One Two Three Four Five"}).status_code == 422
-        assert client.post("/api/projects", json={"name": "x" * 41}).status_code == 422
-        assert client.patch(f"/api/projects/{group.json()['id']}", json={"name": "One Two Three Four Five"}).status_code == 422
-        assert client.patch(f"/api/projects/{group.json()['id']}", json={"name": "x" * 41}).status_code == 422
+        assert client.post("/api/projects", json={"name": "One Two Three Four Five"}).status_code == 201
+        assert client.post("/api/projects", json={"name": "x" * 51}).status_code == 422
+        assert client.patch(f"/api/projects/{group.json()['id']}", json={"name": "One Two Three Four Five"}).status_code == 200
+        assert client.patch(f"/api/projects/{group.json()['id']}", json={"name": "x" * 51}).status_code == 422
         assert client.patch("/api/profile", json={"name": "Alex Student", "bio": "b" * 160}).status_code == 200
         assert client.patch("/api/profile", json={"name": "Alex Student", "bio": "b" * 161}).status_code == 422
         created = client.post("/api/tasks", json={"title": "t" * 80, "due_date": "2026-10-25"})
@@ -637,3 +637,21 @@ def test_favicon_fallback_serves_the_mark_only_icon_without_stale_caching(tmp_pa
         assert response.headers["content-type"].startswith("image/vnd.microsoft.icon")
         assert response.headers["cache-control"] == "no-cache, must-revalidate"
         assert response.content[:4] == b"\x00\x00\x01\x00"
+
+
+def test_group_character_boundaries_and_line_breaks(tmp_path, monkeypatch):
+    with client_for(tmp_path / "group-limits.db", monkeypatch) as client:
+        register(client)
+        description = "First line\n" + "d" * 389
+        assert len(description) == 400
+        created = client.post("/api/projects", json={"name": "n" * 50, "description": description})
+        assert created.status_code == 201
+        group_id = created.json()["id"]
+        assert created.json()["description"] == description
+        for method, url in [(client.post, "/api/projects"), (client.patch, f"/api/projects/{group_id}")]:
+            assert method(url, json={"name": "n" * 51}).status_code == 422
+            assert method(url, json={"name": "Valid", "description": "d" * 401}).status_code == 422
+            valid = method(url, json={"name": "One Two Three Four Five Six", "description": description})
+            assert valid.status_code in (200, 201)
+            assert valid.json()["description"] == description
+        assert client.get(f"/api/projects/{group_id}").json()["description"] == description

@@ -408,7 +408,7 @@ function renderBoard(board, items, project, onlyStatus = 'all', countItems = ite
     const cards = status==='overdue' ? items.filter(isOverdue) : items.filter(task => task.status === status);
     count.textContent = cards.length;
     heading.append(label, count);
-    const content = document.createElement('div'); content.className = 'lane-cards';
+    const content = document.createElement('div'); content.className = 'lane-cards'; content.tabIndex=0; content.setAttribute('role','region'); content.setAttribute('aria-label',`${statusNames[status]} assignments`);
     cards.forEach((task) => content.append(makeTaskCard(task, project)));
     lane.append(heading, content);
     lane.addEventListener('dragover', (event) => { if ((!project || !['viewer'].includes(project.role)) && !project?.legacy_readonly && status!=='overdue') { event.preventDefault(); lane.classList.add('drop-target'); } });
@@ -635,7 +635,7 @@ function renderProjects() {
     empty.append(icon, heading); grid.append(empty); return;
   }
   projects.forEach((project) => {
-    const card = document.createElement('button'); card.className = 'project-card';
+    const card = document.createElement('article'); card.className = 'project-card'; card.setAttribute('role','link'); card.tabIndex=0; card.setAttribute('aria-label',project.name); card.addEventListener('keydown',event=>{if(event.target===card&&(event.key==='Enter'||event.key===' ')){event.preventDefault();location.hash=`#/groups/${project.id}`;}});
     const copy = document.createElement('span'); copy.className='project-card-copy';
     const icon = document.createElement('span'); icon.className = `project-icon group-avatar-${project.avatar || 'violet'}`; icon.setAttribute('aria-hidden','true'); icon.innerHTML = avatarMarkup(project.avatar||'violet','group');
     const title = document.createElement('strong'); title.textContent = project.name;
@@ -647,7 +647,7 @@ function renderProjects() {
     const taskCount = document.createElement('strong'); taskCount.textContent = project.task_count; const taskLabel = document.createElement('small'); taskLabel.textContent = 'assignments'; assignments.append(taskIcon,taskCount,taskLabel);
     const milestones=document.createElement('span');milestones.className='project-metric';const milestoneIcon=document.createElement('b');milestoneIcon.setAttribute('aria-hidden','true');milestoneIcon.innerHTML=iconMarkup('milestones');const milestoneCount=document.createElement('strong');milestoneCount.textContent=project.milestone_count??0;const milestoneLabel=document.createElement('small');milestoneLabel.textContent='milestones';milestones.append(milestoneIcon,milestoneCount,milestoneLabel);
     metrics.append(members,assignments,milestones);
-    copy.append(icon,title,description);card.append(copy,metrics); card.addEventListener('click', () => { location.hash = `#/groups/${project.id}`; }); grid.append(card);
+    const more=document.createElement('button');more.type='button';more.className='text-button group-description-toggle';more.textContent='Read more';more.hidden=true;more.setAttribute('aria-haspopup','dialog');more.addEventListener('click',event=>{event.stopPropagation();showGroupDescription(project.name,project.description);});copy.append(icon,title,description,more);card.append(copy,metrics);observeDescription(description,more); card.addEventListener('click', () => { location.hash = `#/groups/${project.id}`; }); grid.append(card);
   });
 }
 
@@ -655,8 +655,8 @@ $('#new-project').addEventListener('click', () => { $('#project-form').reset(); 
 $('#project-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const name=event.currentTarget.elements.name.value.trim();
-  if(name.split(/\s+/).filter(Boolean).length>4){$('#project-error').textContent='Use up to 4 words in the group name.';event.currentTarget.elements.name.focus();return;}
-  try { const id=event.currentTarget.dataset.id;const payload=Object.fromEntries(new FormData(event.currentTarget));payload.name=name;if((payload.description||'').length>200){$('#project-error').textContent='Description must be 200 characters or fewer.';event.currentTarget.elements.description.focus();return;}const project=id?await patch(`/api/projects/${id}`,payload):await post('/api/projects',payload); $('#project-dialog').close(); await loadProjects(); if(id&&routeFromHash().name==='groups'&&Number(routeFromHash().id)===Number(project.id)){await renderProject(project.id);if(activeGroupChatId===project.id){const header=$('.thread-header h2');if(header)header.textContent=project.name;await loadConversations();renderConversations();}}else location.hash = `#/groups/${project.id}`; }
+  if(name.length>50){$('#project-error').textContent='Group name must be 50 characters or fewer.';event.currentTarget.elements.name.focus();return;}
+  try { const id=event.currentTarget.dataset.id;const payload=Object.fromEntries(new FormData(event.currentTarget));payload.name=name;if((payload.description||'').length>400){$('#project-error').textContent='Description must be 400 characters or fewer.';event.currentTarget.elements.description.focus();return;}const project=id?await patch(`/api/projects/${id}`,payload):await post('/api/projects',payload); $('#project-dialog').close(); await loadProjects(); if(id&&routeFromHash().name==='groups'&&Number(routeFromHash().id)===Number(project.id)){await renderProject(project.id);if(activeGroupChatId===project.id){const header=$('.thread-header h2');if(header)header.textContent=project.name;await loadConversations();renderConversations();}}else location.hash = `#/groups/${project.id}`; }
   catch (error) { $('#project-error').textContent = error.message; }
 });
 $('#delete-group').addEventListener('click',async()=>{if(!activeProject||!await requestConfirmation({title:'Delete study group?',message:`“${activeProject.name}” and its shared assignments, messages, and history will be removed.`,confirmLabel:'Delete group',danger:true}))return;try{await api(`/api/projects/${activeProject.id}`,{method:'DELETE'});$('#project-dialog').close();location.hash='#/groups';await loadProjects();}catch(error){$('#project-error').textContent=error.message;}});
@@ -677,6 +677,12 @@ async function loadJoinRequests(projectId) {
   } catch(error){box.textContent=error.message;}
 }
 
+// Overflow is measured from rendered text, including responsive width changes.
+const observedDescriptions=new Set();
+const descriptionObserver=new ResizeObserver(entries=>{for(const {target} of entries){const toggle=target.nextElementSibling;if(toggle?.classList.contains('group-description-toggle'))toggle.hidden=target.scrollHeight<=target.clientHeight+1;}});
+function observeDescription(description,toggle){
+  requestAnimationFrame(()=>{for(const node of observedDescriptions){if(!node.isConnected){descriptionObserver.unobserve(node);observedDescriptions.delete(node);}}observedDescriptions.add(description);descriptionObserver.observe(description);toggle.hidden=description.scrollHeight<=description.clientHeight+1;});
+}
 function showGroupDescription(name,text) {
   let dialog=$('#group-description-dialog');if(!dialog){dialog=document.createElement('dialog');dialog.id='group-description-dialog';dialog.className='group-description-dialog';dialog.innerHTML='<section class="group-description-panel"><div class="dialog-head"><h2></h2><button type="button" class="icon-button" aria-label="Close">×</button></div><p></p></section>';document.body.append(dialog);$('.icon-button',dialog).addEventListener('click',()=>dialog.close());}
   $('h2',dialog).textContent=name;$('p',dialog).textContent=text||'';dialog.showModal();
@@ -696,7 +702,7 @@ async function renderProject(projectId) {
   const heroAvatar=document.createElement('span');heroAvatar.className=`group-hero-avatar group-avatar-${activeProject.avatar||'violet'}`;heroAvatar.setAttribute('aria-hidden','true');heroAvatar.innerHTML=avatarMarkup(activeProject.avatar||'violet','group');
   const title = document.createElement('h2'); title.textContent = activeProject.name;
   const description = document.createElement('p');description.className='group-description';description.textContent=activeProject.description||'';
-  const descriptionToggle=document.createElement('button');descriptionToggle.type='button';descriptionToggle.className='text-button group-description-toggle';descriptionToggle.textContent='Read more';descriptionToggle.hidden=!(activeProject.description||'').trim();descriptionToggle.setAttribute('aria-haspopup','dialog');descriptionToggle.addEventListener('click',()=>showGroupDescription(activeProject.name,activeProject.description));
+  const descriptionToggle=document.createElement('button');descriptionToggle.type='button';descriptionToggle.className='text-button group-description-toggle';descriptionToggle.textContent='Read more';descriptionToggle.hidden=true;observeDescription(description,descriptionToggle);descriptionToggle.setAttribute('aria-haspopup','dialog');descriptionToggle.addEventListener('click',()=>showGroupDescription(activeProject.name,activeProject.description));
   const stats=document.createElement('div');stats.className='group-hero-stats';
   const memberStat=document.createElement('span');memberStat.className='group-stat';memberStat.innerHTML=`<b aria-hidden="true">${iconMarkup('group')}</b><strong></strong><span>members</span>`;memberStat.querySelector('strong').textContent=String(activeProject.members.length);
   const assignmentStat=document.createElement('span');assignmentStat.className='group-stat';assignmentStat.innerHTML=`<b aria-hidden="true">${iconMarkup('assignments')}</b><strong id="group-assignments-count">…</strong><span>assignments</span>`;
@@ -725,6 +731,7 @@ async function renderProject(projectId) {
   search.addEventListener('input',()=>renderFilteredGroupBoard(activeProject));course.addEventListener('change',()=>renderFilteredGroupBoard(activeProject));scope.addEventListener('change',()=>renderFilteredGroupBoard(activeProject));
   const sidebar = document.createElement('aside'); sidebar.className = 'group-sidebar';
   const memberPanel = document.createElement('section'); memberPanel.className = 'group-panel'; const memberHead=document.createElement('div');memberHead.className='group-panel-heading';const memberTitle=document.createElement('h3');memberTitle.textContent='Your team';const memberCountBadge=document.createElement('span');memberCountBadge.className='panel-count';memberCountBadge.textContent=String(activeProject.members.length);memberHead.append(memberTitle,memberCountBadge);memberPanel.append(memberHead);
+  const memberList=document.createElement('div');memberList.className='member-list';memberList.tabIndex=0;memberList.setAttribute('aria-label','Team members');memberPanel.append(memberList);memberList.addEventListener('scroll',()=>memberList.querySelectorAll('details[open]').forEach(menu=>{menu.open=false;}));
   activeProject.members.forEach((member) => {
     const row=document.createElement('div');row.className='member-row';
     const avatar=document.createElement('span');avatar.className='avatar small-avatar';setAvatar(avatar,member);
@@ -737,11 +744,11 @@ async function renderProject(projectId) {
         const transfer=document.createElement('button');transfer.type='button';transfer.textContent='Transfer ownership';transfer.addEventListener('click',async()=>{menu.open=false;if(!await requestConfirmation({title:'Transfer ownership?',message:`${member.name} will become the group owner. You will become an admin.`,confirmLabel:'Transfer ownership'}))return;try{await post(`/api/projects/${activeProject.id}/transfer-owner`,{user_id:member.id});await renderProject(activeProject.id);}catch(error){showMessage(error.message);}});
         const remove=document.createElement('button');remove.type='button';remove.className='menu-danger';remove.textContent='Remove from group';remove.addEventListener('click',async()=>{menu.open=false;if(!await requestConfirmation({title:'Remove member?',message:`${member.name} will lose access to this group.`,confirmLabel:'Remove member',danger:true}))return;try{await api(`/api/projects/${activeProject.id}/members/${member.id}`,{method:'DELETE'});await renderProject(activeProject.id);}catch(error){showMessage(error.message);}});menuItems.append(change,transfer,remove);
       }
-      menu.append(trigger,menuItems);menu.addEventListener('toggle',()=>{if(!menu.open)return;requestAnimationFrame(()=>{const popup=menu.querySelector('.member-menu-items');const bounds=popup.getBoundingClientRect();menu.classList.toggle('opens-up',bounds.bottom>window.innerHeight-12);});});row.append(menu);
+      menu.append(trigger,menuItems);row.append(menu);
     }
-    memberPanel.append(row);
+    memberList.append(row);
   });
-  const milestonePanel = document.createElement('section'); milestonePanel.className = 'group-panel milestones-panel'; const milestoneHead = document.createElement('div'); milestoneHead.className = 'subsection-heading'; const milestoneTitle = document.createElement('h3'); milestoneTitle.textContent = 'Milestones'; milestoneHead.append(milestoneTitle); const milestoneAdd = document.createElement('button'); milestoneAdd.className = 'text-button'; milestoneAdd.textContent = '＋ Add'; milestoneAdd.hidden = activeProject.role === 'viewer'; milestoneAdd.addEventListener('click', () => { $('#milestone-form').reset(); $('#milestone-error').textContent = ''; $('#milestone-dialog').showModal(); }); milestoneHead.append(milestoneAdd); milestonePanel.append(milestoneHead); const milestoneList = document.createElement('div'); milestoneList.id = 'milestone-list'; milestonePanel.append(milestoneList);
+  const milestonePanel = document.createElement('section'); milestonePanel.className = 'group-panel milestones-panel'; const milestoneHead = document.createElement('div'); milestoneHead.className = 'subsection-heading'; const milestoneTitle = document.createElement('h3'); milestoneTitle.textContent = 'Milestones'; milestoneHead.append(milestoneTitle); const milestoneAdd = document.createElement('button'); milestoneAdd.className = 'text-button'; milestoneAdd.textContent = '＋ Add'; milestoneAdd.hidden = activeProject.role === 'viewer'; milestoneAdd.addEventListener('click', () => { $('#milestone-form').reset(); $('#milestone-error').textContent = ''; $('#milestone-dialog').showModal(); }); milestoneHead.append(milestoneAdd); milestonePanel.append(milestoneHead); const milestoneList = document.createElement('div'); milestoneList.id = 'milestone-list';milestoneList.tabIndex=0;milestoneList.setAttribute('aria-label','Milestones'); milestonePanel.append(milestoneList);
   sidebar.append(memberPanel, milestonePanel);
   layout.append(plan, sidebar); pane.append(layout);
   await Promise.all([loadProjectBoard(activeProject), loadMilestones(activeProject.id)]);
@@ -1044,7 +1051,7 @@ boot();
 
 document.addEventListener('pointerdown',event=>{const open=$$('details[open]');open.forEach(menu=>{if(!menu.contains(event.target))menu.open=false;});if(!$('#account-menu').contains(event.target)&&!$('#account-button').contains(event.target))$('#account-menu').hidden=true;});
 document.addEventListener('keydown',event=>{if(event.key==='Escape'){closeOtherMenus(null);$('#account-menu').hidden=true;}});
-document.addEventListener('toggle',event=>{const menu=event.target;if(!(menu instanceof HTMLDetailsElement)||!menu.open)return;closeOtherMenus(menu);$('#account-menu').hidden=true;const popup=menu.querySelector('.message-menu-items,.comment-menu-items,.member-menu-items,.group-menu-items,.task-move-menu');if(!popup)return;enhanceContextMenu(popup);requestAnimationFrame(()=>{menu.classList.remove('opens-up','opens-left');const bounds=popup.getBoundingClientRect();if(bounds.bottom>innerHeight-8)menu.classList.add('opens-up');if(bounds.right>innerWidth-8)menu.classList.add('opens-left');});},true);
+document.addEventListener('toggle',event=>{const menu=event.target;if(!(menu instanceof HTMLDetailsElement)||!menu.open)return;closeOtherMenus(menu);$('#account-menu').hidden=true;const popup=menu.querySelector('.message-menu-items,.comment-menu-items,.member-menu-items,.group-menu-items,.task-move-menu');if(!popup)return;enhanceContextMenu(popup);requestAnimationFrame(()=>{menu.classList.remove('opens-up','opens-left');const memberList=menu.closest('.member-list');if(memberList){const list=memberList.getBoundingClientRect(),anchor=menu.getBoundingClientRect();popup.style.maxHeight=`${Math.max(80,list.height-8)}px`;popup.style.overflowY='auto';popup.style.bottom='auto';popup.style.top=`${Math.max(list.top+4,Math.min(anchor.bottom+4,list.bottom-popup.offsetHeight-4))-anchor.top}px`;return;}const bounds=popup.getBoundingClientRect();if(bounds.bottom>innerHeight-8)menu.classList.add('opens-up');if(bounds.right>innerWidth-8)menu.classList.add('opens-left');});},true);
 document.addEventListener('focusin',event=>{const open=$$('details[open]');open.forEach(menu=>{if(!menu.contains(event.target))menu.open=false;});if(!$('#account-menu').contains(event.target)&&event.target!==$('#account-button'))$('#account-menu').hidden=true;});
 window.addEventListener('resize',()=>$$('.message-menu[open]').forEach(menu=>positionMessageMenu(menu,menu.closest('.message-row')?.classList.contains('mine'))));
 window.addEventListener('scroll',()=>$$('.message-menu[open]').forEach(menu=>positionMessageMenu(menu,menu.closest('.message-row')?.classList.contains('mine'))),true);
