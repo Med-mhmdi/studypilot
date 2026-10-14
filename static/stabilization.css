@@ -579,3 +579,187 @@ a.secondary-button {
   .project-card-copy .project-icon { width:38px; height:38px; margin-right:9px; margin-bottom:0; }
   .group-hero-avatar { width:40px; height:40px; margin-right:9px; margin-bottom:0; }
 }
+
+/* Keep both assignment boards full-width while cards stay compact in focused views. */
+@media (min-width:901px) {
+  #view-board.active-view > .workspace { margin-bottom:24px; }
+  #view-board .task-board { width:100%; }
+  #view-board .board-lanes {
+    display:grid;
+    width:100%;
+    height:auto;
+    min-width:0;
+    min-height:0;
+    flex:1 1 auto;
+    grid-template-columns:repeat(4,minmax(0,1fr));
+    align-items:stretch;
+    overflow:hidden;
+  }
+  #view-board .board-lanes.is-focused { grid-template-columns:minmax(0,1fr); }
+  #view-board .kanban-lane { width:100%; min-width:0; }
+  #view-board .board-lanes.is-focused .lane-cards {
+    grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),360px));
+    align-content:start;
+    justify-content:start;
+    gap:10px;
+  }
+  #view-board .board-lanes.is-focused .lane-cards .task-card { width:100%; max-width:360px; }
+
+  #view-groups.active-view:has(#project-detail:not([hidden])) .group-workspace-grid {
+    padding-bottom:24px;
+    box-sizing:border-box;
+  }
+  #view-groups:has(#project-detail:not([hidden])) #group-task-board { width:100%; }
+  #view-groups:has(#project-detail:not([hidden])) #group-task-board .board-lanes {
+    display:grid;
+    width:100%;
+    height:auto;
+    min-width:0;
+    min-height:0;
+    flex:1 1 auto;
+    grid-template-columns:repeat(4,minmax(0,1fr));
+    align-items:stretch;
+    overflow:hidden;
+  }
+  #view-groups:has(#project-detail:not([hidden])) #group-task-board .board-lanes.is-focused { grid-template-columns:minmax(0,1fr); }
+  #view-groups:has(#project-detail:not([hidden])) #group-task-board .kanban-lane { width:100%; min-width:0; }
+  #view-groups:has(#project-detail:not([hidden])) #group-task-board .board-lanes.is-focused .lane-cards {
+    grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),360px));
+    align-content:start;
+    justify-content:start;
+    gap:10px;
+  }
+  #view-groups:has(#project-detail:not([hidden])) #group-task-board .board-lanes.is-focused .lane-cards .task-card { width:100%; max-width:360px; }
+}
+
+@media (max-width:900px) {
+  .board-lanes { width:100%; min-width:0; }
+  .board-lanes.is-focused { width:100%; }
+  .board-lanes.is-focused .lane-cards { grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),360px)); justify-content:start; }
+  .board-lanes.is-focused .lane-cards .task-card { width:100%; max-width:360px; }
+  .group-plan .board-lanes.is-focused .lane-cards { grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),360px)); }
+  .group-plan .board-lanes.is-focused .lane-cards .task-card { width:100%; max-width:360px; }
+}
+
+@media (max-width:650px) {
+  .board-lanes:not(.is-focused) { grid-template-columns:1fr; }
+  .board-lanes.is-focused,
+  .group-plan .board-lanes.is-focused { grid-template-columns:minmax(0,1fr); }
+  .board-lanes.is-focused .lane-cards,
+  .group-plan .board-lanes.is-focused .lane-cards { grid-template-columns:minmax(0,1fr); }
+  .board-lanes.is-focused .lane-cards .task-card,
+  .group-plan .board-lanes.is-focused .lane-cards .task-card { max-width:360px; }
+}
+
+@media (max-width:900px) {
+  body:has(#view-board.active-view),
+  body:has(#view-groups.active-view #project-detail:not([hidden])) { overflow:hidden; }
+  #app-screen:has(#view-board.active-view),
+  #app-screen:has(#view-groups.active-view #project-detail:not([hidden])) {
+    display:flex;
+    width:100%;
+    height:100dvh;
+    min-height:0;
+    flex-direction:column;
+    overflow:hidden;
+  }
+  #app-screen:has(#view-board.active-view) > .topbar,
+  #app-screen:has(#view-groups.active-view #project-detail:not([hidden])) > .topbar { flex:0 0 auto; }
+  #app-screen:has(#view-board.active-view) > .shell,
+  #app-screen:has(#view-groups.active-view #project-detail:not([hidden])) > .shell {
+    display:flex;
+    width:100%;
+    height:auto;
+    min-height:0;
+    flex:1 1 auto;
+    flex-direction:column;
+    overflow:hidden;
+  }
+  #view-board.active-view {
+    display:flex;
+    min-height:0;
+    flex:1 1 auto;
+    flex-direction:column;
+    overflow:hidden;
+  }
+  #view-board > .welcome-row { flex:0 0 auto; }
+  #view-board > .workspace {
+    display:flex;
+    min-height:0;
+    flex:1 1 auto;
+    flex-direction:column;
+    margin-bottom:20px;
+    overflow:hidden;
+  }
+  #view-board .task-board { width:100%; min-height:0; flex:1 1 auto; }
+  #view-board .board-layout { display:flex; min-height:0; flex:1 1 auto; flex-direction:column; overflow:hidden; }
+  #view-board .board-lanes {
+    display:grid;
+    width:100%;
+    height:auto;
+    min-width:0;
+    min-height:0;
+    flex:1 1 auto;
+    grid-template-columns:minmax(0,1fr);
+    overflow:hidden;
+  }
+  #view-board .kanban-lane { display:flex; min-width:0; min-height:0; flex-direction:column; overflow:hidden; }
+  #view-board .lane-heading { flex:0 0 auto; }
+  #view-board .lane-cards { min-height:0; flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain; }
+
+  #view-groups.active-view:has(#project-detail:not([hidden])) {
+    display:flex;
+    min-height:0;
+    flex:1 1 auto;
+    flex-direction:column;
+    overflow:hidden;
+  }
+  #view-groups.active-view:has(#project-detail:not([hidden])) #project-detail {
+    display:grid;
+    grid-template-rows:auto minmax(0,1fr);
+    min-height:0;
+    flex:1 1 auto;
+    overflow:hidden;
+  }
+  #view-groups.active-view:has(#project-detail:not([hidden])) .group-workspace-grid {
+    display:grid;
+    height:100%;
+    min-height:0;
+    grid-template-columns:minmax(0,1fr);
+    grid-template-rows:minmax(0,1fr) minmax(110px,22%);
+    gap:8px;
+    padding-bottom:20px;
+    box-sizing:border-box;
+    overflow:hidden;
+  }
+  #view-groups.active-view:has(#project-detail:not([hidden])) .group-plan { grid-column:1; grid-row:1; }
+  #view-groups.active-view:has(#project-detail:not([hidden])) .group-sidebar { grid-column:1; grid-row:2; }
+  #view-groups.active-view:has(#project-detail:not([hidden])) .group-plan {
+    display:flex;
+    min-width:0;
+    min-height:0;
+    flex-direction:column;
+    overflow:hidden;
+  }
+  #view-groups.active-view:has(#project-detail:not([hidden])) #group-task-board {
+    display:flex;
+    width:100%;
+    min-height:0;
+    flex:1 1 auto;
+    flex-direction:column;
+  }
+  #view-groups.active-view:has(#project-detail:not([hidden])) #group-task-board .board-lanes {
+    display:grid;
+    width:100%;
+    height:auto;
+    min-width:0;
+    min-height:0;
+    flex:1 1 auto;
+    grid-template-columns:minmax(0,1fr);
+    overflow:hidden;
+  }
+  #view-groups.active-view:has(#project-detail:not([hidden])) #group-task-board .kanban-lane { display:flex; min-width:0; min-height:0; flex-direction:column; overflow:hidden; }
+  #view-groups.active-view:has(#project-detail:not([hidden])) #group-task-board .lane-heading { flex:0 0 auto; }
+  #view-groups.active-view:has(#project-detail:not([hidden])) #group-task-board .lane-cards { min-height:0; flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain; }
+  #view-groups.active-view:has(#project-detail:not([hidden])) .group-sidebar { min-height:0; max-height:100%; overflow:auto; }
+}
