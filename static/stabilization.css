@@ -59,8 +59,10 @@ a.secondary-button {
   background: transparent;
   color: var(--ink);
 }
-.account-menu button > span:first-child { display: grid; place-items: center; width: 18px; height: 18px; color: var(--muted); }
-.account-menu button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* Navbar controls share a centered 34px hit box; avatar artwork stays intact. */
+:is(#theme-toggle,#notification-button,#account-button) { display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; min-width:34px; flex:0 0 34px; padding:0; line-height:1; }
+:is(#theme-toggle,#notification-button) > svg { display:block; width:18px; height:18px; flex:none; }
+#account-button .avatar { display:grid; place-items:center; margin:0; flex:none; }
 .account-menu button:hover,
 .account-menu button:focus-visible { background: var(--surface-soft); }
 .account-menu #logout-button { color: var(--ink); }
@@ -275,6 +277,7 @@ a.secondary-button {
 
 /* Shared menu behavior: neutral defaults, icon labels, safe edges and dark contrast. */
 :is(.message-menu-items,.comment-menu-items,.member-menu-items,.group-menu-items,.task-move-menu,.account-menu) button {
+  display:flex; align-items:center; gap:8px; min-height:36px; padding:8px 10px; font-size:12px; line-height:20px; text-align:left;
   color: var(--ink);
   text-decoration: none;
 }
@@ -311,24 +314,7 @@ a.secondary-button {
   color: var(--ink);
   box-shadow: 0 15px 40px #11132138;
 }
-.message-menu-items button {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 36px;
-  padding: 8px 10px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--ink);
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-.message-menu-items button > span:first-child { display:grid; width:17px; height:17px; flex:0 0 17px; place-items:center; color:var(--muted); }
-.message-menu-items button svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
-.message-menu-items button.menu-danger { color:#c9414d; }
-.message-menu-items button.menu-danger > span:first-child { color:inherit; }
+.message-menu-items button { border:0; border-radius:8px; background:transparent; cursor:pointer; }
 .message-content { position:relative; min-width:0; }
 .message-bubble-row { display:flex; align-items:flex-end; gap:6px; max-width:100%; }
 .message-row.mine .message-bubble-row { flex-direction:row-reverse; }
@@ -360,6 +346,8 @@ a.secondary-button {
 [data-theme="dark"] .member-menu-items button:focus-visible,
 [data-theme="dark"] .group-menu-items button:focus-visible,
 [data-theme="dark"] .task-move-menu button:focus-visible { background:#383a4c; color:#fff; }
+
+[data-theme="dark"] :is(.message-menu-items,.comment-menu-items,.member-menu-items,.group-menu-items,.task-move-menu) button.menu-danger { color:#ff9ca5; }
 
 /* Pinned message modal */
 #pinned-dialog {
@@ -494,14 +482,28 @@ a.secondary-button {
 }
 
 .progress-track .progress-segment:first-child:last-child { border-radius:999px; }
-:is(.message-menu-items,.comment-menu-items,.member-menu-items,.group-menu-items,.task-move-menu) .menu-icon { display:inline-grid; width:17px; height:17px; flex:0 0 17px; place-items:center; color:var(--muted); }
-:is(.message-menu-items,.comment-menu-items,.member-menu-items,.group-menu-items,.task-move-menu) .menu-icon svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+:is(.message-menu-items,.comment-menu-items,.member-menu-items,.group-menu-items,.task-move-menu,.account-menu) .menu-icon { display:inline-grid; width:20px; height:20px; flex:0 0 20px; place-items:center; color:var(--muted); }
+:is(.message-menu-items,.comment-menu-items,.member-menu-items,.group-menu-items,.task-move-menu,.account-menu) .menu-icon svg { display:block; width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
 :is(.message-menu-items,.comment-menu-items,.member-menu-items,.group-menu-items,.task-move-menu) .menu-danger .menu-icon { color:inherit; }
 :is(.comment-menu,.member-actions-menu,.group-actions-menu,.task-move-popover).opens-up :is(.comment-menu-items,.member-menu-items,.group-menu-items,.task-move-menu) { top:auto; bottom:calc(100% + 6px); }
 :is(.comment-menu,.member-actions-menu,.group-actions-menu,.task-move-popover).opens-left :is(.comment-menu-items,.member-menu-items,.group-menu-items,.task-move-menu) { right:0; left:auto; }
 
 @container assignment-heading (max-width:430px) { .welcome-row .new-assignment-button { width:42px; min-width:42px; height:42px; padding:0; gap:0; } .welcome-row .new-assignment-button > span { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; } .welcome-row .new-assignment-button > svg { width:18px; height:18px; } }
 
+
+/* Card metadata shares one wrapping row; no board sizing rules are changed. */
+.task-badges-row { display:flex; align-items:center; flex-wrap:wrap; gap:5px; min-width:0; margin-top:6px; }
+.task-badges-row > span { max-width:100%; overflow-wrap:anywhere; }
+.task-badges-row .task-assignees { display:flex; align-items:center; flex-wrap:wrap; gap:3px; min-height:24px; max-width:100%; margin:0; }
+.task-badges-row .task-assignee-avatar { display:grid; place-items:center; margin:0; flex:0 0 24px; }
+.task-badges-row .scope-tag.personal { background:#e8f2ff; color:#2567a9; }
+.task-badges-row .scope-tag.group { background:#e7f6ee; color:#237b54; }
+[data-theme="dark"] .task-badges-row .scope-tag.personal { background:#213650; color:#a9d2ff; }
+[data-theme="dark"] .task-badges-row .scope-tag.group { background:#183a2c; color:#a4ddbc; }
+/* Trade 5px of toolbar margin for the larger heading, preserving board bounds. */
+#view-groups .group-plan > .subsection-heading { height:24px; }
+#view-groups .group-plan > .subsection-heading h3 { margin:0; font-size:22px; font-weight:750; line-height:24px; }
+.group-empty .group-study-illustration { display:block; width:min(100%,360px); height:auto; margin:0 auto 20px; object-fit:contain; }
 
 /* Shared board geometry. The viewport owns height; content never sizes its tracks. */
 @media (min-width:901px) {

@@ -51,6 +51,9 @@ const iconPaths = {
   leaf: '<path d="M20.5 3.5C11 3.7 5.2 5.5 4 11c-.8 3.6 1.3 6 4.5 6.3 5.9.6 10.7-5.4 12-13.8Z"/><path d="M3 21c3.3-5.7 7.3-9.3 13-12"/>',
   flower: '<path d="M12 12c-4-2-4-7 0-7s4 5 0 7Zm0 0c2-4 7-4 7 0s-5 4-7 0Zm0 0c4 2 4 7 0 7s-4-5 0-7Zm0 0c-2 4-7 4-7 0s5-4 7 0Z"/><circle cx="12" cy="12" r="2"/>',
   stars: '<path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Zm7 12 .9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15Z"/>',
+  profile: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/>',
+  settings: '<path d="m9 3-.5 2-1.8 1-2-.5-2 3.5L4 11v2l-1.3 2 2 3.5 2-.5 1.8 1 .5 2h6l.5-2 1.8-1 2 .5 2-3.5L20 13v-2l1.3-2-2-3.5-2 .5-1.8-1-.5-2Z"/><circle cx="12" cy="12" r="3"/>',
+  logout: '<path d="M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5M16 8l4 4-4 4M8 12h12"/>',
   person1: '<circle cx="12" cy="8" r="4" fill="#8f573b" stroke="none"/><path d="M4 21c.5-4.4 3.3-7 8-7s7.5 2.6 8 7" fill="#6a5bd7" stroke="none"/><path d="M8 7c0-3 1.8-5 4.5-5 2.2 0 3.5 1.4 3.5 3.7" stroke="#342846" stroke-width="2.5"/>',
   person2: '<circle cx="12" cy="8" r="4" fill="#d59a70" stroke="none"/><path d="M4 21c.5-4.4 3.3-7 8-7s7.5 2.6 8 7" fill="#368f84" stroke="none"/><path d="M7.5 8c-.5-3.2 1.3-5.8 4.7-5.8S17 4.7 16.5 8" stroke="#573b2d" stroke-width="2.8"/>',
   person3: '<circle cx="12" cy="8" r="4" fill="#70452f" stroke="none"/><path d="M4 21c.5-4.4 3.3-7 8-7s7.5 2.6 8 7" fill="#d26e70" stroke="none"/><path d="M7.5 7.5a4.5 4.5 0 0 1 9 0" stroke="#201e2b" stroke-width="3"/>',
@@ -172,7 +175,7 @@ function setTheme(theme) {
 }
 $('#notification-button').innerHTML=`${iconMarkup('bell')}<span id="notification-dot" hidden></span>`;
 $$('button.icon-button[data-close],.profile-photo-close').forEach(button=>setIcon(button,'close'));
-[['profile-open','person1'],['settings-open','sun'],['logout-button','close']].forEach(([id,icon])=>{const b=$(`#${id}`);if(b){const label=b.textContent.trim();b.replaceChildren();const glyph=document.createElement('span');glyph.innerHTML=iconMarkup(icon);const text=document.createElement('span');text.textContent=label;b.append(glyph,text);}});
+[['profile-open','profile'],['settings-open','settings'],['logout-button','logout']].forEach(([id,icon])=>{const b=$(`#${id}`);if(b){const label=b.textContent.trim();b.replaceChildren();const glyph=document.createElement('span');glyph.className='menu-icon';glyph.innerHTML=iconMarkup(icon);const text=document.createElement('span');text.textContent=label;b.append(glyph,text);}});
 if($('#delete-task'))setIcon($('#delete-task'),'trash');
 if($('#rotate-join-code'))setIcon($('#rotate-join-code'),'rotate');
 ['new-task','board-new-task'].forEach(id=>{const button=$(`#${id}`);if(button)button.innerHTML=`${iconMarkup('add')}<span>New assignment</span>`;button.setAttribute('aria-label','New assignment');});
@@ -443,12 +446,16 @@ function makeTaskCard(task, project) {
   const context = document.createElement('div'); context.className = 'task-context';
   if (task.project_name && !project) context.append(makeTag(task.project_name, 'project-tag'));
   if (task.course) context.append(makeTag(task.course, 'course-tag'));
-  if (task.priority) context.append(makeTag(`${task.priority} priority`, `priority-tag ${task.priority}`));
+  context.hidden=!context.childElementCount;
+  const badges=document.createElement('div');badges.className='task-badges-row';
+  if(task.priority)badges.append(makeTag(`${task.priority} priority`,`priority-tag ${task.priority}`));
+  const groupAssignment=task.project_id!=null;badges.append(makeTag(groupAssignment?'Group':'Personal',`scope-tag ${groupAssignment?'group':'personal'}`));
   const deadline = document.createElement('p'); deadline.className = `task-deadline ${isOverdue(task) ? 'overdue' : ''}`;
   deadline.textContent = `${isOverdue(task) ? 'Overdue · ' : 'Due · '}${formatDate(task.due_date, { month: 'short', day: 'numeric', year: 'numeric' })}`;
   if(isOverdue(task)){const actual=document.createElement('small');actual.className='underlying-status';actual.textContent=statusNames[task.status];deadline.append(' · ',actual);}
   const description=document.createElement('p');description.className='task-description-preview';description.textContent=task.description||'';description.hidden=!task.description;
   const assignees=document.createElement('div');assignees.className='task-assignees';(task.assignees||[]).slice(0,4).forEach(person=>{const avatar=document.createElement('span');avatar.className='avatar task-assignee-avatar';setAvatar(avatar,person);avatar.title=person.name;avatar.setAttribute('aria-label',person.name);assignees.append(avatar);});if(!(task.assignees||[]).length){const me=document.createElement('span');me.textContent=project?'Unassigned':'You';assignees.append(me);}
+  badges.append(assignees);
   const actions = document.createElement('div'); actions.className = 'task-card-actions';
   const moveButton=document.createElement('button');moveButton.type='button';moveButton.className='task-move-trigger icon-button';setIcon(moveButton,'move');moveButton.title='Move assignment';moveButton.setAttribute('aria-label',`Move ${task.title}`);moveButton.hidden=!canEdit;
   const moveMenu=document.createElement('div');moveMenu.className='task-move-popover';moveMenu.setAttribute('popover','auto');moveMenu.setAttribute('aria-label',`Move ${task.title} to a status`);
@@ -459,7 +466,7 @@ function makeTaskCard(task, project) {
   const comment = document.createElement('button'); comment.type='button';comment.className='icon-button';setIcon(comment,'comment');comment.title='Comments';comment.setAttribute('aria-label',`Comments for ${task.title}`);comment.addEventListener('click', () => toggleComments(card, task, project));
   const historyButton=document.createElement('button');historyButton.type='button';historyButton.className='icon-button';setIcon(historyButton,'history');historyButton.title='History';historyButton.setAttribute('aria-label',`History for ${task.title}`);historyButton.addEventListener('click',()=>toggleTaskHistory(card,task));
   actions.append(moveButton, moveMenu, comment, historyButton);
-  card.append(titleLine, context, description, deadline, assignees, actions);
+  card.append(titleLine, context, badges, description, deadline, actions);
   return card;
 }
 
@@ -630,7 +637,7 @@ function renderProjects() {
   const grid = $('#projects-grid'); grid.replaceChildren();
   if (!projects.length) {
     const empty = document.createElement('div'); empty.className = 'group-empty';
-    const icon = document.createElement('img'); icon.className = 'study-illustration'; icon.src='/static/studypilot-study-illustration.png'; icon.alt=''; icon.width=220; icon.height=190; icon.loading='lazy';
+    const icon = document.createElement('img'); icon.className = 'group-study-illustration'; icon.src='/static/studypilot-group-study-clay.webp'; icon.alt=''; icon.width=768; icon.height=512; icon.loading='lazy';
     const heading = document.createElement('h2'); heading.textContent = 'No study groups yet';
     empty.append(icon, heading); grid.append(empty); return;
   }
@@ -725,10 +732,9 @@ async function renderProject(projectId) {
   const boardTools=document.createElement('div');boardTools.className='board-tools group-board-tools';
   const searchLabel=document.createElement('label');searchLabel.className='search-box';const search=document.createElement('input');search.id='group-task-search';search.type='search';search.placeholder='Search assignments';search.setAttribute('aria-label','Search group assignments');searchLabel.append(search);
   const courseLabel=document.createElement('label');courseLabel.className='course-filter';const course=document.createElement('select');course.id='group-course-filter';course.setAttribute('aria-label','Filter group assignments by course');courseLabel.append(course);
-  const scopeLabel=document.createElement('label');scopeLabel.className='course-filter';const scope=document.createElement('select');scope.id='group-scope-filter';scope.setAttribute('aria-label','Filter group assignments');scope.replaceChildren(new Option('All assignments','all'),new Option('Mine','mine'),new Option('Group','group'));scopeLabel.append(scope);
-  boardTools.append(searchLabel,courseLabel,scopeLabel);plan.append(boardTools);
+  boardTools.append(searchLabel,courseLabel);plan.append(boardTools);
   const groupBoard = document.createElement('div'); groupBoard.id = 'group-task-board';groupBoard.dataset.focusStatus='all'; plan.append(groupBoard);
-  search.addEventListener('input',()=>renderFilteredGroupBoard(activeProject));course.addEventListener('change',()=>renderFilteredGroupBoard(activeProject));scope.addEventListener('change',()=>renderFilteredGroupBoard(activeProject));
+  search.addEventListener('input',()=>renderFilteredGroupBoard(activeProject));course.addEventListener('change',()=>renderFilteredGroupBoard(activeProject));
   const sidebar = document.createElement('aside'); sidebar.className = 'group-sidebar';
   const memberPanel = document.createElement('section'); memberPanel.className = 'group-panel'; const memberHead=document.createElement('div');memberHead.className='group-panel-heading';const memberTitle=document.createElement('h3');memberTitle.textContent='Your team';const memberCountBadge=document.createElement('span');memberCountBadge.className='panel-count';memberCountBadge.textContent=String(activeProject.members.length);memberHead.append(memberTitle,memberCountBadge);memberPanel.append(memberHead);
   const memberList=document.createElement('div');memberList.className='member-list';memberList.tabIndex=0;memberList.setAttribute('aria-label','Team members');memberPanel.append(memberList);memberList.addEventListener('scroll',()=>memberList.querySelectorAll('details[open]').forEach(menu=>{menu.open=false;}));
@@ -767,8 +773,8 @@ async function loadProjectBoard(project) {
 function renderFilteredGroupBoard(project) {
   const board=$('#group-task-board');if(!board||!project)return;
   const query=($('#group-task-search')?.value||'').trim().toLocaleLowerCase();
-  const course=$('#group-course-filter')?.value||'';const scope=$('#group-scope-filter')?.value||'all';
-  const filtered=groupBoardItems.filter(task=>{const mine=(task.assignees||[]).some(person=>Number(person.id)===Number(user.id));return(!query||`${task.title} ${task.course||''}`.toLocaleLowerCase().includes(query))&&(!course||task.course===course)&&(scope==='all'||scope==='group'||mine);});
+  const course=$('#group-course-filter')?.value||'';
+  const filtered=groupBoardItems.filter(task=>(!query||`${task.title} ${task.course||''}`.toLocaleLowerCase().includes(query))&&(!course||task.course===course));
   renderBoard(board,filtered,project,board.dataset.focusStatus||'all',groupBoardItems);
 }
 
