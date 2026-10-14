@@ -324,7 +324,7 @@ function renderDashboard() {
   const rate = tasks.length ? Math.round(done / tasks.length * 100) : 0;
   $('#completion-rate').textContent = `${rate}%`;
   const overdueCount=tasks.filter(task=>task.status!=='done'&&isOverdue(task)).length;const activeDoing=tasks.filter(task=>task.status==='in_progress'&&!isOverdue(task)).length;const activeTodo=tasks.filter(task=>task.status==='todo'&&!isOverdue(task)).length;
-  const categories=[['done','Done',done],['overdue','Overdue',overdueCount],['doing','Doing',activeDoing],['todo','To do',activeTodo]];const remainder=tasks.length?100-categories.reduce((sum,entry)=>sum+Math.floor(entry[2]/tasks.length*100),0):0;const fractions=categories.map((entry,index)=>({index,fraction:tasks.length?(entry[2]/tasks.length*100)%1:0})).sort((a,b)=>b.fraction-a.fraction);const percents=categories.map(entry=>tasks.length?Math.floor(entry[2]/tasks.length*100):0);fractions.slice(0,remainder).forEach(entry=>percents[entry.index]++);const bar=$('#completion-bar');bar.replaceChildren();bar.setAttribute('aria-label',`${rate}% complete. ${tasks.length} assignments total.`);categories.forEach(([kind,label,count],index)=>{if(!count||!tasks.length)return;const segment=document.createElement('span');segment.className=`progress-segment progress-${kind}`;segment.style.width=`${count/tasks.length*100}%`;segment.setAttribute('aria-label',`${count} ${label.toLowerCase()}, ${percents[index]}%`);bar.append(segment);});const legend=$('#progress-legend');legend.replaceChildren();categories.forEach(([kind,label],index)=>{const item=document.createElement('span');item.className=`progress-legend-item progress-${kind}`;const dot=document.createElement('i');dot.setAttribute('aria-hidden','true');const text=document.createElement('span');text.textContent=`${label} ${percents[index]}%`;item.append(dot,text);legend.append(item);});
+  const categories=[['done','Done',done],['doing','Doing',activeDoing],['todo','To do',activeTodo],['overdue','Overdue',overdueCount]];const remainder=tasks.length?100-categories.reduce((sum,entry)=>sum+Math.floor(entry[2]/tasks.length*100),0):0;const fractions=categories.map((entry,index)=>({index,fraction:tasks.length?(entry[2]/tasks.length*100)%1:0})).sort((a,b)=>b.fraction-a.fraction);const percents=categories.map(entry=>tasks.length?Math.floor(entry[2]/tasks.length*100):0);fractions.slice(0,remainder).forEach(entry=>percents[entry.index]++);const bar=$('#completion-bar');bar.replaceChildren();bar.setAttribute('aria-label',`${rate}% complete. ${tasks.length} assignments total.`);categories.forEach(([kind,label,count],index)=>{if(!count||!tasks.length)return;const segment=document.createElement('span');segment.className=`progress-segment progress-${kind}`;segment.style.width=`${count/tasks.length*100}%`;segment.setAttribute('aria-label',`${count} ${label.toLowerCase()}, ${percents[index]}%`);bar.append(segment);});const legend=$('#progress-legend');legend.replaceChildren();categories.forEach(([kind,label],index)=>{const item=document.createElement('span');item.className=`progress-legend-item progress-${kind}`;const dot=document.createElement('i');dot.setAttribute('aria-hidden','true');const text=document.createElement('span');text.textContent=`${label} ${percents[index]}%`;item.append(dot,text);legend.append(item);});
   $('#group-summary').textContent = `${projects.length} study groups · ${projects.reduce((sum, project) => sum + Number(project.member_count || 0), 0)} group memberships`;
   const preview = $('#todo-preview'); preview.replaceChildren();
   const focus = tasks.filter((task) => task.status !== 'done').sort((a, b) => Number(isOverdue(b)) - Number(isOverdue(a)) || ({high:0,medium:1,low:2}[a.priority] - {high:0,medium:1,low:2}[b.priority]) || a.due_date.localeCompare(b.due_date)).slice(0, 5);
@@ -542,6 +542,7 @@ function populateAssignees(project, selected) {
 function openEditTask(task, project) {
   taskForm.reset();
   $('#task-id').value = task.id;
+  taskForm.dataset.originalTitle = task.title;
   $('#task-dialog-title').textContent = 'Edit assignment';
   $('#scope-wrap').hidden = true;
   $('#assignment-group-wrap').hidden = true;
@@ -569,6 +570,7 @@ taskForm.addEventListener('submit', async (event) => {
   const projectId = taskForm.dataset.projectId;
   const payload = Object.fromEntries(new FormData(taskForm).entries());
   delete payload.assignment_scope;
+  if (id && payload.title === taskForm.dataset.originalTitle && payload.title.length > 80) delete payload.title;
   if ($('#assignment-scope').value === 'group' && !id) {
     if (!projectId) { $('#form-error').textContent='Choose a study group.'; return; }
     payload.project_id = Number(projectId);

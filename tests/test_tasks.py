@@ -572,8 +572,11 @@ def test_v11_group_and_bounded_text_limits_are_enforced_on_create_and_edit(tmp_p
         assert client.patch(f"/api/projects/{group.json()['id']}", json={"name": "x" * 41}).status_code == 422
         assert client.patch("/api/profile", json={"name": "Alex Student", "bio": "b" * 160}).status_code == 200
         assert client.patch("/api/profile", json={"name": "Alex Student", "bio": "b" * 161}).status_code == 422
-        assert client.post("/api/tasks", json={"title": "t" * 160, "due_date": "2026-10-25"}).status_code == 201
-        assert client.post("/api/tasks", json={"title": "t" * 161, "due_date": "2026-10-25"}).status_code == 422
+        created = client.post("/api/tasks", json={"title": "t" * 80, "due_date": "2026-10-25"})
+        assert created.status_code == 201
+        assert client.post("/api/tasks", json={"title": "t" * 81, "due_date": "2026-10-25"}).status_code == 422
+        assert client.patch(f"/api/tasks/{created.json()['id']}", json={"title": "u" * 80}).status_code == 200
+        assert client.patch(f"/api/tasks/{created.json()['id']}", json={"title": "u" * 81}).status_code == 422
 
 
 def test_v12_group_ui_limits_copy_feedback_and_shared_board_contract():
@@ -600,6 +603,33 @@ def test_v12_group_ui_limits_copy_feedback_and_shared_board_contract():
     assert "confirm(" not in script and "alert(" not in script
 
 
+def test_task_title_limit_and_overview_detail_hotfix_contract(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "static" / "index.html").read_text(encoding="utf-8")
+    script = (root / "static" / "app.js").read_text(encoding="utf-8")
+    styles = (root / "static" / "styles.css").read_text(encoding="utf-8")
+    stabilization = (root / "static" / "stabilization.css").read_text(encoding="utf-8")
+    assert 'id="title" name="title" maxlength="80"' in html
+    assert "['done','Done',done],['doing','Doing',activeDoing],['todo','To do',activeTodo],['overdue','Overdue',overdueCount]" in script
+    assert "flex-direction:row;overflow:hidden;min-height:11px" in styles
+    assert "height: 340px; min-height: 340px; max-height: 340px" in stabilization
+    assert "payload.title.length > 80" in script and "delete payload.title" in script
+    assert ".task-details-body { min-width:0; overflow-x:hidden; overflow-y:auto" in stabilization
+
+    database = tmp_path / "existing-long-title.db"
+    with client_for(database, monkeypatch) as client:
+        register(client)
+        task = client.post("/api/tasks", json={"title": "Original title", "due_date": "2026-10-25"}).json()
+        legacy_title = "legacy" * 20
+        with sqlite3.connect(database) as con:
+            con.execute("UPDATE tasks SET title=? WHERE id=?", (legacy_title, task["id"]))
+        edited = client.patch(f"/api/tasks/{task['id']}", json={"description": "Updated notes"})
+        assert edited.status_code == 200
+        assert edited.json()["title"] == legacy_title
+        assert edited.json()["description"] == "Updated notes"
+        assert client.patch(f"/api/tasks/{task['id']}", json={"title": "x" * 81}).status_code == 422
 def test_favicon_fallback_serves_the_mark_only_icon_without_stale_caching(tmp_path, monkeypatch):
     with client_for(tmp_path / "favicon.db", monkeypatch) as client:
         response = client.get("/favicon.ico")
