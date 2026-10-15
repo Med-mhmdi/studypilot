@@ -624,3 +624,13 @@ a.secondary-button {
 .calendar-year-row input:focus{outline:0;box-shadow:none}
 .calendar-year-row input:focus-visible:not([data-pointer-focus]){outline:2px solid var(--brand);outline-offset:2px}
 @media(max-width:650px){.calendar-arrow svg{width:18px;height:18px}.calendar-event{gap:1px;padding:1px}.calendar-event-main{padding:3px 0}.calendar-event-delete{flex-basis:24px;width:24px;height:24px;min-width:24px}.calendar-event-delete svg{width:15px;height:15px}}
+.calendar-year-row{display:grid;grid-template-columns:32px minmax(0,1fr) 32px;justify-items:center;gap:10px;margin-bottom:11px}
+.calendar-year-row input{box-sizing:border-box;width:105px;max-width:100%;grid-column:2;grid-row:1}
+.calendar-year-arrow{display:grid;place-items:center;width:32px;height:32px;min-width:32px;padding:0;border:1px solid transparent;background:transparent;color:var(--muted);transition:background-color .15s ease,color .15s ease,border-color .15s ease,transform .15s ease}
+.calendar-year-arrow:first-child{grid-column:1;grid-row:1}
+.calendar-year-arrow:last-child{grid-column:3;grid-row:1}
+.calendar-year-arrow svg{display:block;width:16px;height:16px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.calendar-year-arrow:not(:disabled):hover{border-color:var(--line);background:var(--surface-soft);color:var(--brand)}
+.calendar-year-arrow:not(:disabled):active{transform:scale(.94)}
+.calendar-year-arrow:disabled{opacity:.42;cursor:not-allowed}
+@media(max-width:650px){.calendar-year-row{gap:8px}.calendar-year-arrow{width:30px;height:30px;min-width:30px}.calendar-year-row input{width:105px}}

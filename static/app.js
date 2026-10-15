@@ -1,6 +1,8 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const appMessage = $('#app-message');
+let appMessageTimer = null;
+let appMessageVersion = 0;
 const taskForm = $('#task-form');
 let user = null;
 let tasks = [];
@@ -96,9 +98,20 @@ document.addEventListener('reset', event => requestAnimationFrame(() => refreshC
 new MutationObserver(records => records.forEach(record => record.addedNodes.forEach(node => { if (node.nodeType === Node.ELEMENT_NODE) { if(node.matches('[maxlength]'))attachCharacterCounter(node);refreshCharacterCounters(node); } }))).observe(document.body, { childList: true, subtree: true });
 
 function showMessage(message, type = 'error') {
+  clearTimeout(appMessageTimer);
+  appMessageTimer = null;
+  const version = ++appMessageVersion;
   appMessage.textContent = message;
   appMessage.className = `app-message ${type}`;
   appMessage.hidden = !message;
+  if (message) {
+    appMessageTimer = setTimeout(() => {
+      if (version !== appMessageVersion) return;
+      appMessage.hidden = true;
+      appMessage.textContent = '';
+      appMessageTimer = null;
+    }, type === 'success' ? 3000 : 8000);
+  }
 }
 
 function requestConfirmation({title='Are you sure?',message,confirmLabel='Continue',danger=false}) {
@@ -913,7 +926,25 @@ function showCalendarTask(task){let dialog=$('#calendar-view-dialog');if(!dialog
 async function rescheduleCalendarTask(task,dateKey){if(!calendarCanEdit(task))return;if(!await requestConfirmation({title:'Reschedule assignment?',message:`Move “${task.title}” from ${formatDate(task.due_date)} to ${formatDate(dateKey)}?`,confirmLabel:'Reschedule'}))return;try{await patch(`/api/tasks/${task.id}`,{due_date:dateKey});if($('#calendar-view-dialog')?.open)$('#calendar-view-dialog').close();tasks=await api('/api/tasks?scope=all');renderCalendar();showMessage('Assignment rescheduled.','success');}catch(error){showMessage(error.message);}}
 function showCalendarOverflow(date,items){let dialog=$('#calendar-overflow-dialog');if(!dialog){dialog=document.createElement('dialog');dialog.id='calendar-overflow-dialog';document.body.append(dialog);}dialog.replaceChildren();const panel=document.createElement('section');panel.className='calendar-overflow-panel';const head=document.createElement('div');head.className='dialog-head';const title=document.createElement('h2');title.textContent=date.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'});const close=document.createElement('button');close.type='button';close.className='icon-button';close.setAttribute('aria-label','Close day assignments');setIcon(close,'close');close.addEventListener('click',()=>dialog.close());head.append(title,close);const list=document.createElement('div');list.className='calendar-overflow-list';items.forEach(({kind,value})=>{const button=document.createElement('button');button.type='button';button.className=`calendar-overflow-item ${kind==='task'?(isOverdue(value)?'overdue':value.status):'milestone-event'}`;const name=document.createElement('strong');name.textContent=kind==='task'?value.title:`◆ ${value.title}`;const meta=document.createElement('small');meta.textContent=kind==='task'?`${value.course||'Assignment'} · ${isOverdue(value)?'Overdue':statusNames[value.status]||value.status}`:`${value.project_name} · Milestone`;button.append(name,meta);button.addEventListener('click',()=>{dialog.close();if(kind==='task')showCalendarTask(value);else location.hash=`#/groups/${value.project_id}`;});list.append(button);});panel.append(head,list);dialog.append(panel);dialog.showModal();}
 function normalizeCalendarYear(value,fallback=calendarCursor.getFullYear()){if(String(value).trim()==='')return Math.max(1900,Math.min(2100,fallback));const numeric=Number(value);if(!Number.isFinite(numeric))return Math.max(1900,Math.min(2100,fallback));return Math.max(1900,Math.min(2100,Math.trunc(numeric)));}
-function openCalendarMonthPicker(){const picker=$('#calendar-month-picker');if(!picker.hidden){picker.hidden=true;$('#calendar-month').setAttribute('aria-expanded','false');return;}picker.replaceChildren();const yearRow=document.createElement('div');yearRow.className='calendar-year-row';const year=document.createElement('input');year.id='calendar-year-input';year.type='number';year.min='1900';year.max='2100';year.step='1';year.value=String(calendarCursor.getFullYear());year.setAttribute('aria-label','Calendar year');const months=document.createElement('div');months.className='calendar-month-options';const monthNames=Array.from({length:12},(_,index)=>new Date(2024,index,1).toLocaleDateString(undefined,{month:'short'}));monthNames.forEach((name,index)=>{const button=document.createElement('button');button.type='button';button.textContent=name;button.className=index===calendarCursor.getMonth()?'selected':'';button.addEventListener('click',()=>{const next=normalizeCalendarYear(year.value);calendarCursor=new Date(next,index,1);picker.hidden=true;$('#calendar-month').setAttribute('aria-expanded','false');renderCalendar();});months.append(button);});const applyYear=()=>{const next=normalizeCalendarYear(year.value);year.value=String(next);calendarCursor=new Date(next,calendarCursor.getMonth(),1);renderCalendar();};year.addEventListener('change',applyYear);year.addEventListener('blur',()=>{if(year.value==='')year.value=String(calendarCursor.getFullYear());else applyYear();});year.addEventListener('pointerdown',()=>year.dataset.pointerFocus='true');year.addEventListener('keydown',()=>delete year.dataset.pointerFocus);year.addEventListener('wheel',event=>{event.preventDefault();if(!event.deltaY)return;const current=normalizeCalendarYear(year.value);const next=Math.max(1900,Math.min(2100,current+(event.deltaY<0?1:-1)));if(next===current)return;year.value=String(next);calendarCursor=new Date(next,calendarCursor.getMonth(),1);renderCalendar();},{passive:false});yearRow.append(year);picker.append(yearRow,months);picker.hidden=false;$('#calendar-month').setAttribute('aria-expanded','true');}
+function openCalendarMonthPicker(){
+  const picker=$('#calendar-month-picker');
+  if(!picker.hidden){picker.hidden=true;$('#calendar-month').setAttribute('aria-expanded','false');return;}
+  picker.replaceChildren();
+  const yearRow=document.createElement('div');yearRow.className='calendar-year-row';
+  const year=document.createElement('input');year.id='calendar-year-input';year.type='number';year.min='1900';year.max='2100';year.step='1';year.value=String(calendarCursor.getFullYear());year.setAttribute('aria-label','Calendar year');
+  const previousYear=document.createElement('button');previousYear.type='button';previousYear.className='icon-button calendar-year-arrow';previousYear.setAttribute('aria-label','Previous year');setIcon(previousYear,'chevronLeft');
+  const nextYear=document.createElement('button');nextYear.type='button';nextYear.className='icon-button calendar-year-arrow';nextYear.setAttribute('aria-label','Next year');setIcon(nextYear,'chevronRight');
+  const syncYearControls=()=>{const selected=normalizeCalendarYear(year.value);previousYear.disabled=selected<=1900;nextYear.disabled=selected>=2100;};
+  const applyYear=()=>{const next=normalizeCalendarYear(year.value);year.value=String(next);calendarCursor=new Date(next,calendarCursor.getMonth(),1);syncYearControls();renderCalendar();};
+  const changeYear=amount=>{const next=Math.max(1900,Math.min(2100,normalizeCalendarYear(year.value)+amount));year.value=String(next);applyYear();};
+  previousYear.addEventListener('click',()=>changeYear(-1));nextYear.addEventListener('click',()=>changeYear(1));
+  const months=document.createElement('div');months.className='calendar-month-options';
+  const monthNames=Array.from({length:12},(_,index)=>new Date(2024,index,1).toLocaleDateString(undefined,{month:'short'}));
+  monthNames.forEach((name,index)=>{const button=document.createElement('button');button.type='button';button.textContent=name;button.className=index===calendarCursor.getMonth()?'selected':'';button.addEventListener('click',()=>{const next=normalizeCalendarYear(year.value);calendarCursor=new Date(next,index,1);picker.hidden=true;$('#calendar-month').setAttribute('aria-expanded','false');renderCalendar();});months.append(button);});
+  year.addEventListener('change',applyYear);year.addEventListener('blur',()=>{if(year.value==='')year.value=String(calendarCursor.getFullYear());else applyYear();});year.addEventListener('pointerdown',()=>year.dataset.pointerFocus='true');year.addEventListener('keydown',()=>delete year.dataset.pointerFocus);
+  year.addEventListener('wheel',event=>{event.preventDefault();if(!event.deltaY)return;const current=normalizeCalendarYear(year.value);const next=Math.max(1900,Math.min(2100,current+(event.deltaY<0?1:-1)));if(next===current)return;year.value=String(next);applyYear();},{passive:false});
+  syncYearControls();yearRow.append(previousYear,year,nextYear);picker.append(yearRow,months);picker.hidden=false;$('#calendar-month').setAttribute('aria-expanded','true');
+}
 $('#calendar-month').addEventListener('click',openCalendarMonthPicker);
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('#calendar-month-picker').hidden){$('#calendar-month-picker').hidden=true;$('#calendar-month').setAttribute('aria-expanded','false');$('#calendar-month').focus();}});
 document.addEventListener('click',event=>{const picker=$('#calendar-month-picker');if(!picker.hidden&&!event.target.closest('.calendar-month-wrap')){picker.hidden=true;$('#calendar-month').setAttribute('aria-expanded','false');}});
