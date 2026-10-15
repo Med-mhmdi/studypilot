@@ -424,6 +424,26 @@ def test_calendar_rescheduling_enforces_task_write_permissions(tmp_path, monkeyp
             assert stranger.patch(f"/api/tasks/{task['id']}", json={"due_date":"2026-11-03"}).status_code == 404
 
 
+def test_calendar_assignment_delete_respects_existing_write_permissions(tmp_path, monkeypatch):
+    database = tmp_path / "calendar-delete.db"
+    with client_for(database, monkeypatch) as owner:
+        register(owner, "calendar-delete-owner@example.edu", "Calendar Delete Owner")
+        project = owner.post("/api/projects", json={"name": "Calendar delete permissions"}).json()
+        task = owner.post("/api/tasks", json={
+            "title": "Permission-protected calendar item", "due_date": "2026-10-16", "project_id": project["id"],
+        }).json()
+        with TestClient(app) as viewer:
+            register(viewer, "calendar-delete-viewer@example.edu", "Calendar Delete Viewer")
+            join_group(owner, viewer, project)
+            viewer_id = viewer.get("/api/auth/me").json()["id"]
+            with sqlite3.connect(database) as con:
+                con.execute("UPDATE project_members SET legacy_readonly=1 WHERE project_id=? AND user_id=?", (project["id"], viewer_id))
+            assert viewer.delete(f"/api/tasks/{task['id']}").status_code == 403
+            assert viewer.get(f"/api/tasks/{task['id']}").status_code == 200
+        assert owner.delete(f"/api/tasks/{task['id']}").status_code == 204
+        assert owner.get(f"/api/tasks/{task['id']}").status_code == 404
+
+
 def test_legacy_group_roles_migrate_without_granting_old_viewers_write_access(tmp_path, monkeypatch):
     path=tmp_path/"legacy-roles.db"
     with sqlite3.connect(path) as con:
