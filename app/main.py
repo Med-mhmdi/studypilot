@@ -471,7 +471,7 @@ def pinned_messages(project_id: int, user: User):
 def get_group_message(project_id: int, message_id: int, user: User):
     with db.connect() as con:
         _membership(con, project_id, user["id"])
-        row=con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,u.id user_id,u.name,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.id=?",(project_id,message_id)).fetchone()
+        row=con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,u.id user_id,u.name,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.id=?",(project_id,message_id)).fetchone()
         if row is None: raise HTTPException(status_code=404, detail="message not found")
         return dict(row)
 
@@ -479,7 +479,7 @@ def get_group_message(project_id: int, message_id: int, user: User):
 @app.get("/api/group-conversations")
 def group_conversations(user: User):
     with db.connect() as con:
-        return [dict(r) for r in con.execute("""SELECT p.id project_id,p.name,
+        return [dict(r) for r in con.execute("""SELECT p.id project_id,p.name,p.avatar,p.created_at,
             (SELECT m.body FROM messages m WHERE m.project_id=p.id ORDER BY id DESC LIMIT 1) last_message,
             (SELECT m.created_at FROM messages m WHERE m.project_id=p.id ORDER BY id DESC LIMIT 1) last_message_at,
             (SELECT COUNT(*) FROM messages m WHERE m.project_id=p.id AND m.user_id<>? AND m.id>COALESCE((SELECT last_read_message_id FROM group_message_reads r WHERE r.project_id=p.id AND r.user_id=?),0)) unread_count
@@ -721,9 +721,9 @@ def list_messages(project_id: int, user: User, after_id: int = Query(default=0, 
         latest = con.execute("SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=?", (project_id,)).fetchone()[0]
         con.execute("INSERT INTO group_message_reads(project_id,user_id,last_read_message_id) VALUES(?,?,?) ON CONFLICT(project_id,user_id) DO UPDATE SET last_read_message_id=MAX(last_read_message_id,excluded.last_read_message_id)", (project_id,user["id"],latest))
         if after_id:
-            rows = con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,u.id AS user_id,u.name,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.id>? ORDER BY m.id LIMIT 100", (project_id, after_id)).fetchall()
+            rows = con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.id AS user_id,u.name,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id LEFT JOIN messages reply ON reply.id=m.reply_to_id AND reply.project_id=m.project_id WHERE m.project_id=? AND m.id>? ORDER BY m.id LIMIT 100", (project_id, after_id)).fetchall()
         else:
-            rows = con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,u.id AS user_id,u.name,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY m.id DESC LIMIT 100", (project_id,)).fetchall()
+            rows = con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.id AS user_id,u.name,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id LEFT JOIN messages reply ON reply.id=m.reply_to_id AND reply.project_id=m.project_id WHERE m.project_id=? ORDER BY m.id DESC LIMIT 100", (project_id,)).fetchall()
             rows = list(reversed(rows))
         return [dict(row) for row in rows]
 
@@ -736,9 +736,11 @@ def send_message(project_id: int, body: MessageCreate, user: User):
     with db.connect() as con:
         role = _membership(con, project_id, user["id"])["role"]
         _can_edit(role)
-        cur = con.execute("INSERT INTO messages(project_id,user_id,body) VALUES(?,?,?)", (project_id, user["id"], text))
+        if body.reply_to_id is not None and not con.execute("SELECT 1 FROM messages WHERE id=? AND project_id=?", (body.reply_to_id, project_id)).fetchone():
+            raise HTTPException(status_code=404, detail="reply target not found")
+        cur = con.execute("INSERT INTO messages(project_id,user_id,body,reply_to_id) VALUES(?,?,?,?)", (project_id, user["id"], text, body.reply_to_id))
         _log_activity(con, project_id, user["id"], "message_sent", "sent a project message")
-        return dict(con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,u.id AS user_id,u.name,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id WHERE m.id=?", (cur.lastrowid,)).fetchone())
+        return dict(con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.id AS user_id,u.name,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id LEFT JOIN messages reply ON reply.id=m.reply_to_id AND reply.project_id=m.project_id WHERE m.id=?", (cur.lastrowid,)).fetchone())
 
 
 @app.patch("/api/projects/{project_id}/messages/{message_id}")
@@ -974,11 +976,11 @@ def list_direct_messages(conversation_id: int, user: User, after_id: int = Query
         _direct_conversation(con, conversation_id, user["id"])
         con.execute("UPDATE direct_messages SET read_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE conversation_id=? AND sender_id<>? AND read_at IS NULL", (conversation_id, user["id"]))
         if after_id:
-            rows=con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,u.name AS sender_name,u.avatar,u.profile_photo
-                FROM direct_messages dm JOIN users u ON u.id=dm.sender_id WHERE dm.conversation_id=? AND dm.id>? ORDER BY dm.id LIMIT 100""",(conversation_id,after_id)).fetchall()
+            rows=con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,dm.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.name AS sender_name,u.avatar,u.profile_photo
+                FROM direct_messages dm JOIN users u ON u.id=dm.sender_id LEFT JOIN direct_messages reply ON reply.id=dm.reply_to_id AND reply.conversation_id=dm.conversation_id WHERE dm.conversation_id=? AND dm.id>? ORDER BY dm.id LIMIT 100""",(conversation_id,after_id)).fetchall()
         else:
-            rows=con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,u.name AS sender_name,u.avatar,u.profile_photo
-                FROM direct_messages dm JOIN users u ON u.id=dm.sender_id WHERE dm.conversation_id=? ORDER BY dm.id DESC LIMIT 100""",(conversation_id,)).fetchall()
+            rows=con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,dm.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.name AS sender_name,u.avatar,u.profile_photo
+                FROM direct_messages dm JOIN users u ON u.id=dm.sender_id LEFT JOIN direct_messages reply ON reply.id=dm.reply_to_id AND reply.conversation_id=dm.conversation_id WHERE dm.conversation_id=? ORDER BY dm.id DESC LIMIT 100""",(conversation_id,)).fetchall()
             rows=list(reversed(rows))
         return [dict(row) for row in rows]
 
@@ -990,12 +992,14 @@ def send_direct_message(conversation_id: int, body: MessageCreate, user: User):
         raise HTTPException(status_code=422, detail="message cannot be blank")
     with db.connect() as con:
         _direct_conversation(con, conversation_id, user["id"])
-        cursor = con.execute("INSERT INTO direct_messages(conversation_id,sender_id,body) VALUES(?,?,?)", (conversation_id, user["id"], text))
+        if body.reply_to_id is not None and not con.execute("SELECT 1 FROM direct_messages WHERE id=? AND conversation_id=?", (body.reply_to_id, conversation_id)).fetchone():
+            raise HTTPException(status_code=404, detail="reply target not found")
+        cursor = con.execute("INSERT INTO direct_messages(conversation_id,sender_id,body,reply_to_id) VALUES(?,?,?,?)", (conversation_id, user["id"], text, body.reply_to_id))
         conversation = con.execute("SELECT user_a,user_b FROM direct_conversations WHERE id=?", (conversation_id,)).fetchone()
         recipient = conversation["user_b"] if conversation["user_a"] == user["id"] else conversation["user_a"]
         con.execute("INSERT INTO notifications(user_id,actor_id,kind,detail) VALUES(?,?, 'direct_message','You received a new message.')", (recipient,user["id"]))
-        return dict(con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,u.name AS sender_name,u.avatar,u.profile_photo
-            FROM direct_messages dm JOIN users u ON u.id=dm.sender_id WHERE dm.id=?""", (cursor.lastrowid,)).fetchone())
+        return dict(con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,dm.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.name AS sender_name,u.avatar,u.profile_photo
+            FROM direct_messages dm JOIN users u ON u.id=dm.sender_id LEFT JOIN direct_messages reply ON reply.id=dm.reply_to_id AND reply.conversation_id=dm.conversation_id WHERE dm.id=?""", (cursor.lastrowid,)).fetchone())
 
 
 @app.patch("/api/direct/conversations/{conversation_id}/messages/{message_id}")
@@ -1036,7 +1040,7 @@ def pinned_direct_messages(conversation_id: int, user: User):
 def get_direct_message(conversation_id: int, message_id: int, user: User):
     with db.connect() as con:
         _direct_conversation(con, conversation_id, user["id"])
-        row = con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,u.name AS sender_name,u.avatar
+        row = con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,dm.reply_to_id,u.name AS sender_name,u.avatar
             FROM direct_messages dm JOIN users u ON u.id=dm.sender_id WHERE dm.conversation_id=? AND dm.id=?""", (conversation_id, message_id)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="message not found")

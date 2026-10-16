@@ -30,6 +30,9 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt
 
+      - name: Install browser for UI tests
+        run: python -m playwright install --with-deps chromium
+
       - name: Run tests
         run: python -m pytest -q
 

@@ -49,6 +49,45 @@ a.secondary-button {
 .find-classmates-button { gap: 8px; white-space: nowrap; }
 .find-classmates-button:hover,
 .find-classmates-button:focus-visible { text-decoration: none; }
+
+/* Messages refinements */
+.conversation-tabs { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px; margin:0 0 10px; padding:3px; border:1px solid var(--line); border-radius:12px; background:var(--surface-soft); }
+.conversation-tab { display:flex; align-items:center; justify-content:center; gap:6px; min-width:0; min-height:36px; padding:6px 8px; border:1px solid transparent; border-radius:9px; background:transparent; color:var(--muted); font-family:inherit; font-size:11px; font-weight:600; cursor:pointer; }
+.conversation-tab strong { min-width:18px; padding:2px 5px; border-radius:7px; background:color-mix(in srgb,var(--brand) 9%,transparent); color:var(--brand); font-size:10px; text-align:center; }
+.conversation-tab .tab-unread { color:var(--muted); font-size:9px; font-weight:500; }
+.conversation-tab.active { border-color:var(--line); background:var(--surface); color:var(--ink); box-shadow:0 1px 3px #22223812; }
+.inbox-search { transition:border-color .15s,box-shadow .15s; }
+.inbox-search:focus-within { border-color:#8b7fe8; box-shadow:0 0 0 3px #887ce833; }
+.inbox-search #conversation-search:focus-visible { outline:0; box-shadow:none; }
+.conversation-list { background:transparent; }
+.find-classmates-button { background:#f8f7ff; border-color:#e3dfff; color:#594cc2; }
+.find-classmates-button:hover { background:#f0edff; border-color:#d2cbff; }
+.find-classmates-button:focus-visible { outline-offset:3px; }
+.message-row.incoming { align-items:flex-start; }
+.message-content { width:max-content; max-width:calc(100% - 34px); }
+.message-row.mine .message-content { max-width:100%; }
+.message-bubble { display:block; box-sizing:border-box; width:max-content; max-width:100%; min-width:0; word-break:normal; overflow-wrap:anywhere; }
+.message-bubble-row { width:max-content; max-width:100%; }
+.message-avatar { margin-top:0; }
+.direct-form { align-items:center; flex-wrap:wrap; }
+.direct-form input { flex:1 1 160px; }
+.direct-form .character-counter { display:block; flex:0 0 auto; align-self:center; min-height:0; margin:0 2px; white-space:nowrap; text-align:center; }
+.reply-preview { display:flex; align-items:center; gap:8px; width:100%; min-width:0; padding:7px 10px; border:1px solid var(--line); border-left:3px solid var(--brand); border-radius:9px; background:var(--surface-soft); }
+.reply-preview[hidden] { display:none; }
+.reply-preview span { color:var(--ink); font-size:10px; font-weight:700; white-space:nowrap; }
+.reply-preview small { flex:1; min-width:0; overflow:hidden; color:var(--muted); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+.reply-preview .icon-button { width:27px; height:27px; flex:none; }
+.message-reply-quote { display:block; max-width:min(520px,100%); margin:0 0 5px; padding:5px 8px; overflow:hidden; border:0; border-left:2px solid #9d93e9; border-radius:5px; background:var(--surface-soft); color:var(--muted); font:inherit; font-size:10px; text-align:left; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+.jump-latest { position:sticky; bottom:8px; z-index:2; align-self:center; margin:auto 0 3px; padding:8px 12px; border:1px solid var(--line); border-radius:999px; background:var(--surface); color:var(--brand); box-shadow:0 5px 18px #17172a24; font-size:11px; font-weight:700; cursor:pointer; }
+.message-row.incoming .message-menu { top:-8px; }
+[data-theme="dark"] .conversation-list { background:transparent; }
+[data-theme="dark"] .conversation-tabs { background:#292b39; border-color:#444657; }
+[data-theme="dark"] .conversation-tab.active { background:#333548; border-color:#4a4d60; color:#f0f1f8; }
+[data-theme="dark"] .conversation-tab strong { background:#51469d66; color:#c7c1ff; }
+[data-theme="dark"] .find-classmates-button { background:#292b39; border-color:#484b5d; color:#c7c1ff; }
+[data-theme="dark"] .find-classmates-button:hover { background:#333548; border-color:#5a5d73; }
+[data-theme="dark"] .message-reply-quote,[data-theme="dark"] .reply-preview { background:#292b39; border-color:#484b5d; }
+@media(max-width:430px) { .conversation-tab { gap:4px; padding:6px 4px; font-size:10px; } .conversation-tab .tab-unread { font-size:8px; } .direct-form { gap:6px; } .direct-form .character-counter { font-size:9px; margin:0; } .message-content { max-width:calc(100% - 32px); } }
 .account-menu { padding: 5px; }
 .account-menu button {
   display: flex;

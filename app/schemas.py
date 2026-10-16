@@ -60,6 +60,7 @@ class OwnershipTransfer(RequestModel):
 
 class MessageCreate(RequestModel):
     body: str = Field(min_length=1, max_length=2000)
+    reply_to_id: int | None = Field(default=None, gt=0)
 
 
 class MessageUpdate(RequestModel):

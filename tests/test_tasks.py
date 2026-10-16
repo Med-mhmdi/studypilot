@@ -342,6 +342,43 @@ def test_direct_message_pins_are_private_and_jumpable_data(tmp_path, monkeypatch
             assert stranger.post(f"/api/direct/conversations/{conversation['id']}/messages/{message['id']}/pin").status_code == 404
 
 
+def test_message_replies_group_avatar_and_unread_counts(tmp_path, monkeypatch):
+    with client_for(tmp_path / "messages-v2.db", monkeypatch) as owner:
+        register(owner, "owner@example.edu", "Owner")
+        project = owner.post("/api/projects", json={"name": "Leaf team", "avatar": "mint"}).json()
+        with TestClient(app) as mate:
+            register(mate, "mate@example.edu", "Mate")
+            join_group(owner, mate, project)
+            listed = mate.get("/api/group-conversations").json()
+            assert listed[0]["avatar"] == "mint"
+            changed = owner.patch(f"/api/projects/{project['id']}", json={"name": "Leaf team", "description": "", "avatar": "coral"})
+            assert changed.status_code == 200
+            assert mate.get("/api/group-conversations").json()[0]["avatar"] == "coral"
+
+            original = owner.post(f"/api/projects/{project['id']}/messages", json={"body": "Bring the green folder"}).json()
+            assert owner.get("/api/group-conversations").json()[0]["unread_count"] == 0
+            assert mate.get("/api/group-conversations").json()[0]["unread_count"] == 1
+            reply = mate.post(f"/api/projects/{project['id']}/messages", json={"body": "I have it", "reply_to_id": original["id"]})
+            assert reply.status_code == 201 and reply.json()["reply_to_id"] == original["id"]
+            assert mate.get(f"/api/projects/{project['id']}/messages").json()[-1]["reply_body"] == "Bring the green folder"
+            assert mate.post(f"/api/projects/{project['id']}/messages", json={"body": "bad reference", "reply_to_id": 987654}).status_code == 404
+            assert owner.get("/api/group-conversations").json()[0]["unread_count"] == 1
+            assert owner.get("/api/group-conversations").json()[0]["unread_count"] == 1
+            owner.get(f"/api/projects/{project['id']}/messages")
+            assert owner.get("/api/group-conversations").json()[0]["unread_count"] == 0
+
+            direct = owner.post("/api/direct/conversations", json={"recipient_id": 2}).json()
+            direct_id = direct["id"]
+            direct_original = owner.post(f"/api/direct/conversations/{direct_id}/messages", json={"body": "Are we meeting at noon?"}).json()
+            direct_reply = mate.post(f"/api/direct/conversations/{direct_id}/messages", json={"body": "Yes", "reply_to_id": direct_original["id"]})
+            assert direct_reply.status_code == 201 and direct_reply.json()["reply_to_id"] == direct_original["id"]
+            assert mate.get(f"/api/direct/conversations/{direct_id}/messages").json()[-1]["reply_body"] == "Are we meeting at noon?"
+            assert mate.post(f"/api/direct/conversations/{direct_id}/messages", json={"body": "missing target", "reply_to_id": 987654}).status_code == 404
+            assert owner.get("/api/direct/conversations").json()[0]["unread_count"] == 1
+            assert owner.get(f"/api/direct/conversations/{direct_id}/messages").status_code == 200
+            assert owner.get("/api/direct/conversations").json()[0]["unread_count"] == 0
+
+
 def test_notification_bulk_actions_are_scoped_to_the_signed_in_user(tmp_path, monkeypatch):
     path = tmp_path / "notifications.db"
     with client_for(path, monkeypatch) as alice:

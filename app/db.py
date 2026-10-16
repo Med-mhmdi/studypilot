@@ -182,6 +182,7 @@ def initialize() -> None:
         if "deleted_at" not in direct_columns: con.execute("ALTER TABLE direct_messages ADD COLUMN deleted_at TEXT")
         if "pinned_at" not in direct_columns: con.execute("ALTER TABLE direct_messages ADD COLUMN pinned_at TEXT")
         if "pinned_by" not in direct_columns: con.execute("ALTER TABLE direct_messages ADD COLUMN pinned_by INTEGER REFERENCES users(id) ON DELETE SET NULL")
+        if "reply_to_id" not in direct_columns: con.execute("ALTER TABLE direct_messages ADD COLUMN reply_to_id INTEGER REFERENCES direct_messages(id) ON DELETE SET NULL")
         con.execute("""CREATE TABLE IF NOT EXISTS activity (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
@@ -236,6 +237,8 @@ def initialize() -> None:
             con.execute("ALTER TABLE messages ADD COLUMN pinned_by INTEGER REFERENCES users(id) ON DELETE SET NULL")
         if "deleted_at" not in message_columns:
             con.execute("ALTER TABLE messages ADD COLUMN deleted_at TEXT")
+        if "reply_to_id" not in message_columns:
+            con.execute("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER REFERENCES messages(id) ON DELETE SET NULL")
         con.execute("""CREATE TABLE IF NOT EXISTS task_assignees (
             task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
