@@ -47,6 +47,8 @@ a.secondary-button {
 .welcome-row .new-assignment-button > svg { width:17px; height:17px; flex:0 0 17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
 .welcome-row .new-assignment-button > span { margin: 0; font-size: 12px; }
 .find-classmates-button { gap: 8px; white-space: nowrap; }
+.find-classmates-button { background:#eeebff; border:1px solid #d4ccff; color:#4436a7; }
+.find-classmates-button:hover { background:#e7e2ff; border-color:#c4baff; color:#392b98; }
 .find-classmates-button:hover,
 .find-classmates-button:focus-visible { text-decoration: none; }
 
@@ -64,11 +66,16 @@ a.secondary-button {
 .find-classmates-button:hover { background:#f0edff; border-color:#d2cbff; }
 .find-classmates-button:focus-visible { outline-offset:3px; }
 .message-row.incoming { align-items:flex-start; }
-.message-content { width:max-content; max-width:calc(100% - 34px); }
+.message-row { width:fit-content; max-width:min(78%,680px); }
+.message-content { flex:0 1 auto; width:fit-content; max-width:calc(100% - 34px); min-width:0; }
 .message-row.mine .message-content { max-width:100%; }
-.message-bubble { display:block; box-sizing:border-box; width:max-content; max-width:100%; min-width:0; word-break:normal; overflow-wrap:anywhere; }
-.message-bubble-row { width:max-content; max-width:100%; }
+.message-bubble { display:inline-block; box-sizing:border-box; width:max-content; max-width:min(520px,100%); min-width:min-content; flex:0 1 auto; word-break:normal; overflow-wrap:anywhere; }
+.message-bubble-row { display:flex; align-items:center; gap:7px; width:max-content; max-width:100%; }
+.message-row.mine .message-bubble-row { flex-direction:row-reverse; }
 .message-avatar { margin-top:0; }
+.message-row.is-pinned .message-bubble:hover { box-shadow:inset 0 0 0 1px #b4a9f0; }
+.pinned-marker { display:grid; place-items:center; width:22px; height:22px; flex:0 0 22px; margin:0 2px; padding:3px; border:0; border-radius:50%; background:color-mix(in srgb,var(--brand) 12%,var(--surface)); color:var(--brand); cursor:pointer; }
+.pinned-marker svg { width:14px; height:14px; fill:none; stroke:currentColor; }
 .direct-form { align-items:center; flex-wrap:wrap; }
 .direct-form input { flex:1 1 160px; }
 .direct-form .character-counter { display:block; flex:0 0 auto; align-self:center; min-height:0; margin:0 2px; white-space:nowrap; text-align:center; }
@@ -78,7 +85,26 @@ a.secondary-button {
 .reply-preview small { flex:1; min-width:0; overflow:hidden; color:var(--muted); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
 .reply-preview .icon-button { width:27px; height:27px; flex:none; }
 .message-reply-quote { display:block; max-width:min(520px,100%); margin:0 0 5px; padding:5px 8px; overflow:hidden; border:0; border-left:2px solid #9d93e9; border-radius:5px; background:var(--surface-soft); color:var(--muted); font:inherit; font-size:10px; text-align:left; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
-.jump-latest { position:sticky; bottom:8px; z-index:2; align-self:center; margin:auto 0 3px; padding:8px 12px; border:1px solid var(--line); border-radius:999px; background:var(--surface); color:var(--brand); box-shadow:0 5px 18px #17172a24; font-size:11px; font-weight:700; cursor:pointer; }
+.direct-stream { position:relative; }
+.jump-latest { position:absolute; left:50%; bottom:10px; z-index:2; transform:translateX(-50%); margin:0; padding:8px 12px; border:1px solid var(--line); border-radius:999px; background:var(--surface); color:var(--brand); box-shadow:0 5px 18px #17172a24; font-size:11px; font-weight:700; cursor:pointer; }
+.conversation-item { min-width:0; }
+.conversation-item .conversation-content { flex:1 1 auto; }
+.conversation-item .unread-pill { display:grid; place-items:center; flex:0 0 auto; min-width:21px; height:21px; margin-left:auto; padding:0 6px; border-radius:999px; background:#6657d9; color:#fff; font-size:10px; font-weight:700; line-height:1; }
+.new-messages-divider { display:flex; align-items:center; gap:10px; margin:9px 7px; color:var(--brand); }
+.new-messages-divider span { height:1px; flex:1; background:color-mix(in srgb,var(--brand) 50%,transparent); }
+.new-messages-divider strong { font-size:10px; font-weight:700; white-space:nowrap; }
+.notification-tabs { display:flex; gap:6px; padding:12px 0 4px; border-bottom:1px solid var(--line); }
+.notification-tab { flex:1; min-height:36px; border:1px solid transparent; border-radius:9px; background:transparent; color:var(--muted); font:600 11px system-ui,sans-serif; cursor:pointer; }
+.notification-tab.active { color:var(--brand); background:color-mix(in srgb,var(--brand) 10%,var(--surface)); border-color:color-mix(in srgb,var(--brand) 22%,var(--line)); }
+.notifications-panel { width:min(700px,calc(100vw - 24px)); max-height:calc(100dvh - 32px); overflow:auto; }
+.notification-item { grid-template-columns:20px minmax(0,1fr) auto; gap:12px; }
+.notification-item input[type=checkbox] { justify-self:center; margin:0; }
+.notification-copy { min-width:0; }
+.notification-copy p { overflow-wrap:anywhere; }
+[data-theme="dark"] .notification-tab.active { background:#343149; color:#d0caff; border-color:#554f78; }
+@media(max-width:650px) { .notification-item { grid-template-columns:20px minmax(0,1fr); } .notification-read { grid-column:2; } .notification-toolbar { align-items:center; } }
+@media(max-width:760px) { .message-row { max-width:91%; } }
+@media(max-width:430px) { .message-row { max-width:96%; } .message-bubble { max-width:min(520px,100%); } }
 .message-row.incoming .message-menu { top:-8px; }
 [data-theme="dark"] .conversation-list { background:transparent; }
 [data-theme="dark"] .conversation-tabs { background:#292b39; border-color:#444657; }
@@ -673,3 +699,6 @@ a.secondary-button {
 .calendar-year-arrow:not(:disabled):active{transform:scale(.94)}
 .calendar-year-arrow:disabled{opacity:.42;cursor:not-allowed}
 @media(max-width:650px){.calendar-year-row{gap:8px}.calendar-year-arrow{width:30px;height:30px;min-width:30px}.calendar-year-row input{width:105px}}
+
+/* Keep the bubble's available width independent from action controls. */
+.message-bubble { max-width:min(520px,100%); }

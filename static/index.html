@@ -6,7 +6,7 @@
 
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f6f7fb">
 
-  <title>StudyPilot</title><link rel="icon" type="image/png" sizes="64x64" href="/static/favicon.png?v=12"><link rel="icon" href="/static/favicon.ico?v=12"><link rel="shortcut icon" href="/static/favicon.ico?v=12"><link rel="stylesheet" href="/static/styles.css?v=25"><link rel="stylesheet" href="/static/stabilization.css?v=26">
+  <title>StudyPilot</title><link rel="icon" type="image/png" sizes="64x64" href="/static/favicon.png?v=12"><link rel="icon" href="/static/favicon.ico?v=12"><link rel="shortcut icon" href="/static/favicon.ico?v=12"><link rel="stylesheet" href="/static/styles.css?v=27"><link rel="stylesheet" href="/static/stabilization.css?v=27">
 
 </head>
 
@@ -52,8 +52,8 @@
 
   <dialog id="settings-dialog"><form id="settings-form"><div class="dialog-head"><div><h2>Settings</h2></div><button type="button" class="icon-button" data-close="settings-dialog" aria-label="Close">×</button></div><fieldset class="field avatar-picker-field"><legend>Avatar</legend><input type="hidden" name="avatar" value="violet"><div class="avatar-picker" data-picker="person" role="radiogroup" aria-label="Choose your illustrated avatar"></div></fieldset><label class="field">Theme<select name="theme"><option value="light">Light</option><option value="dark">Dark</option></select></label><div class="settings-divider"></div><h3>Change password</h3><label class="field">Current password<input name="current_password" type="password" autocomplete="current-password" maxlength="200"></label><label class="field">New password<input name="new_password" type="password" minlength="10" maxlength="200" autocomplete="new-password"></label><p id="settings-error" class="form-error" role="alert"></p><p id="settings-saved" class="success-note" role="status"></p><div class="dialog-actions"><span class="action-spacer"></span><button type="button" class="secondary-button" data-close="settings-dialog">Close</button><button class="primary-button">Save settings</button></div></form></dialog>
 
-  <dialog id="notifications-dialog"><section class="notifications-panel"><div class="dialog-head"><div><h2>Notifications</h2></div><button type="button" class="icon-button" data-close="notifications-dialog" aria-label="Close">×</button></div><div class="notification-toolbar"><label><input id="notification-select-all" type="checkbox"> Select all</label><span id="notification-selection-count">0 selected</span><button id="notification-delete-selected" class="secondary-button" disabled>Delete selected</button><button id="notification-clear-all" class="danger-button">Clear all</button></div><div id="notifications-list" class="notifications-list" aria-live="polite"></div></section></dialog>
+  <dialog id="notifications-dialog"><section class="notifications-panel"><div class="dialog-head"><div><h2>Notifications</h2></div><button type="button" class="icon-button" data-close="notifications-dialog" aria-label="Close">×</button></div><div id="notification-tabs" class="notification-tabs" role="tablist" aria-label="Notification type"></div><div class="notification-toolbar"><label><input id="notification-select-all" type="checkbox"> Select all</label><span id="notification-selection-count">0 selected</span><button id="notification-delete-selected" class="secondary-button" disabled>Delete selected</button><button id="notification-clear-all" class="danger-button">Clear all</button></div><div id="notifications-list" class="notifications-list" aria-live="polite"></div></section></dialog>
 
-  <script src="/static/app.js?v=26" defer></script>
+  <script src="/static/app.js?v=27" defer></script>
 
 </body></html>

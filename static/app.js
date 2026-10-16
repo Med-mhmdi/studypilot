@@ -25,6 +25,11 @@ let pollTimer = null;
 let lastGroupMessageId = 0;
 let lastDirectMessageId = 0;
 let activeGroupChatId = null;
+let activeUnreadMarkerId = null;
+const dismissedUnreadMarkers = new Set();
+let syncInProgress = false;
+let notificationFilter='all';
+const selectedNotificationIds=new Set();
 let showFullArchive = false;
 let boardMetric = '';
 let activeStatus = 'all';
@@ -311,6 +316,7 @@ async function renderRoute() {
     if (route.name === 'messages') await renderInbox();
     if (route.name === 'people') await renderPeople();
   } catch (error) { showMessage(error.message); }
+  startInboxPolling();
 }
 
 window.addEventListener('hashchange', renderRoute);
@@ -839,21 +845,22 @@ async function loadGroupMessages() {
 function appendChatMessage(stream, message, mine) {
   const time=timestamp(message.created_at);const day=time?`${time.getFullYear()}-${time.getMonth()}-${time.getDate()}`:'unknown';const last=stream.querySelector('.message-row:last-of-type');
   if(last?.dataset.day!==day){const sep=document.createElement('div');sep.className='date-separator';sep.textContent=time?time.toLocaleDateString(undefined,{weekday:'short',month:'long',day:'numeric'}):'Earlier';stream.append(sep);}
+  if(activeUnreadMarkerId===Number(message.id)&&!dismissedUnreadMarkers.has(unreadMarkerKey())){const divider=document.createElement('div');divider.className='new-messages-divider';divider.dataset.unreadDivider='true';divider.innerHTML='<span></span><strong>New messages</strong><span></span>';stream.append(divider);}
   const article=document.createElement('article');article.className=`message-row ${mine?'mine':'incoming'} ${last&&last.dataset.sender===String(message.user_id||message.sender_id)&&last.dataset.day===day?'grouped':''} ${message.pinned_at?'is-pinned':''}`;article.dataset.messageId=message.id;article.dataset.sender=message.user_id||message.sender_id;article.dataset.day=day;
   const avatar=document.createElement('span');avatar.className='avatar message-avatar';setAvatar(avatar,mine?user:{id:message.user_id||message.sender_id,name:message.name||message.sender_name,avatar:message.avatar,profile_photo:message.profile_photo});
   const box=document.createElement('div');box.className='message-content';const meta=document.createElement('div');meta.className='message-meta';meta.textContent=`${message.name||message.sender_name||'Classmate'} · ${time?time.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}):'Time unavailable'}${message.edited_at?' · edited':''}`;
   if(message.reply_to_id){const quote=document.createElement('button');quote.type='button';quote.className='message-reply-quote';quote.textContent=message.reply_deleted_at?'Original message deleted':(message.reply_body||'Original message unavailable').slice(0,180);quote.setAttribute('aria-label','Jump to replied message');quote.addEventListener('click',()=>jumpToMessage(message.reply_to_id));box.append(quote);}
   const bubble=document.createElement('p');bubble.className='message-bubble';bubble.textContent=message.deleted_at?'Message deleted':message.body||'';if(message.deleted_at)bubble.classList.add('deleted-message');const bubbleRow=document.createElement('div');bubbleRow.className='message-bubble-row';bubbleRow.append(bubble);box.append(meta,bubbleRow);
-  if((activeGroupChatId||activeConversation)&&!message.deleted_at){const details=document.createElement('details');details.className='message-menu';const summary=document.createElement('summary');setIcon(summary,'more');summary.setAttribute('aria-label','Message actions');summary.title='Message actions';const menu=document.createElement('div');menu.className='message-menu-items';const add=(label,icon,fn,danger=false)=>{const b=document.createElement('button');b.type='button';b.setAttribute('aria-label',label);if(danger)b.className='menu-danger';const glyph=document.createElement('span');glyph.className='menu-icon';glyph.innerHTML=iconMarkup(icon);const text=document.createElement('span');text.textContent=label;b.append(glyph,text);b.addEventListener('click',async()=>{details.open=false;await fn();});menu.append(b);};
+  if(message.pinned_at){const canUnpin=Boolean(activeConversation)||(activeGroupChatId&&projects.find(p=>Number(p.id)===Number(activeGroupChatId))?.role==='owner');const pin=document.createElement(canUnpin?'button':'span');pin.className='pinned-marker';if(canUnpin){pin.type='button';pin.setAttribute('aria-label','Unpin message');pin.title='Unpin message';pin.addEventListener('click',async event=>{event.stopPropagation();dismissUnreadDivider();try{const path=activeGroupChatId?`/api/projects/${activeGroupChatId}/messages/${message.id}/pin`:`/api/direct/conversations/${activeConversation.id}/messages/${message.id}/pin`;await api(path,{method:'DELETE'});if(activeGroupChatId)await refreshGroupThread(true);else await loadDirectMessages(true);}catch(error){showMessage(error.message);}});}setIcon(pin,'pin');bubbleRow.append(pin);}
+  if((activeGroupChatId||activeConversation)&&!message.deleted_at){const details=document.createElement('details');details.className='message-menu';const summary=document.createElement('summary');setIcon(summary,'more');summary.setAttribute('aria-label','Message actions');summary.title='Message actions';const menu=document.createElement('div');menu.className='message-menu-items';const add=(label,icon,fn,danger=false)=>{const b=document.createElement('button');b.type='button';b.setAttribute('aria-label',label);if(danger)b.className='menu-danger';const glyph=document.createElement('span');glyph.className='menu-icon';glyph.innerHTML=iconMarkup(icon);const text=document.createElement('span');text.textContent=label;b.append(glyph,text);b.addEventListener('click',async()=>{details.open=false;dismissUnreadDivider();await fn();});menu.append(b);};
     add('Copy message','copy',async()=>{try{await navigator.clipboard.writeText(message.body);}catch{showMessage('Copy is unavailable in this browser.');}});
     add('Reply','comment',async()=>{setReplyTarget(message);});
     if(mine)add('Edit message','edit',async()=>{const next=await requestTextInput({title:'Edit message',message:'Update the message text.',value:message.body,confirmLabel:'Save'});if(next===null)return;try{if(activeGroupChatId){await patch(`/api/projects/${activeGroupChatId}/messages/${message.id}`,{body:next.trim()});await refreshGroupThread();}else{await patch(`/api/direct/conversations/${activeConversation.id}/messages/${message.id}`,{body:next.trim()});lastDirectMessageId=0;await loadDirectMessages();}}catch(error){showMessage(error.message);}});
     if(mine)add('Delete message','trash',async()=>{if(!await requestConfirmation({title:'Delete message?',message:'The message will be replaced with a deleted marker.',confirmLabel:'Delete message',danger:true}))return;try{if(activeGroupChatId){await api(`/api/projects/${activeGroupChatId}/messages/${message.id}`,{method:'DELETE'});await refreshGroupThread();}else{await api(`/api/direct/conversations/${activeConversation.id}/messages/${message.id}`,{method:'DELETE'});lastDirectMessageId=0;await loadDirectMessages();}}catch(error){showMessage(error.message);}},true);
-    if(activeGroupChatId && projects.find(p=>p.id===activeGroupChatId)?.role==='owner')add(message.pinned_at?'Unpin message':'Pin message','pin',async()=>{try{await api(`/api/projects/${activeGroupChatId}/messages/${message.id}/pin`,{method:message.pinned_at?'DELETE':'POST'});await refreshGroupThread();}catch(error){showMessage(error.message);}});
+    if(activeGroupChatId && projects.find(p=>p.id===activeGroupChatId)?.role==='owner')add(message.pinned_at?'Unpin message':'Pin message','pin',async()=>{try{await api(`/api/projects/${activeGroupChatId}/messages/${message.id}/pin`,{method:message.pinned_at?'DELETE':'POST'});await refreshGroupThread(true);}catch(error){showMessage(error.message);}});
     if(activeConversation)add(message.pinned_at?'Unpin message':'Pin message','pin',async()=>{try{await api(`/api/direct/conversations/${activeConversation.id}/messages/${message.id}/pin`,{method:message.pinned_at?'DELETE':'POST'});await loadDirectMessages(true);}catch(error){showMessage(error.message);}});
     details.addEventListener('toggle',()=>{if(details.open){positionMessageMenu(details,mine);closeOtherMenus(details);}});details.append(summary,menu);bubbleRow.append(details);
   }
-  if(message.pinned_at){const marker=document.createElement('span');marker.className='pinned-marker';marker.textContent='Pinned';box.append(marker);}
   if(!mine)article.append(avatar);article.append(box);stream.append(article);
 }
 
@@ -973,11 +980,6 @@ async function renderInbox() {
   else if (!activeConversation && !activeGroupChatId) {
     $('#direct-thread').innerHTML = '<div class="thread-empty"><span class="empty-check">↗</span><h2>Choose a conversation</h2><p>Select a classmate or a study group on the left.</p></div>';
     stopPolling();
-    pollTimer = setInterval(async () => {
-      if (document.hidden || routeFromHash().name !== 'messages' || activeConversation || activeGroupChatId) return;
-      try { [conversations, groupThreads] = await Promise.all([api('/api/direct/conversations'), api('/api/group-conversations')]); updateUnreadCount(); renderConversations(); }
-      catch { /* Keep the current list visible during a temporary network failure. */ }
-    }, 5000);
   }
 }
 
@@ -988,6 +990,8 @@ function updateUnreadCount() {
   const badge = $('#message-count'); badge.hidden = unread === 0; badge.textContent = unread > 99 ? '99+' : unread;
 }
 
+function startInboxPolling(){stopPolling();if(!user)return;pollTimer=setInterval(async()=>{if(document.hidden||syncInProgress||!user)return;syncInProgress=true;try{const [direct,groups,notifications]=await Promise.all([api('/api/direct/conversations'),api('/api/group-conversations'),api('/api/notifications')]);conversations=direct;groupThreads=groups;updateUnreadCount();$('#notification-dot').hidden=!notifications.some(item=>!item.read_at);if(routeFromHash().name==='messages')renderConversations();if(activeConversation&&routeFromHash().name==='messages'){activeUnreadMarkerId=Number(conversations.find(item=>Number(item.id)===Number(activeConversation.id))?.first_unread_message_id)||null;await loadDirectMessages(false,lastMessageFullyVisible($('#direct-stream')));}else if(activeGroupChatId&&routeFromHash().name==='messages'){activeUnreadMarkerId=Number(groupThreads.find(item=>Number(item.project_id)===Number(activeGroupChatId))?.first_unread_message_id)||null;await refreshGroupThread();}}catch{/* Keep existing messages visible during temporary network failures. */}finally{syncInProgress=false;}},4000);}
+
 function renderConversations() {
   const list = $('#conversation-list'); list.replaceChildren();
   const search = ($('#conversation-search')?.value || '').trim().toLowerCase();
@@ -996,7 +1000,7 @@ function renderConversations() {
   const tabs=$('#conversation-tabs');tabs.replaceChildren();
   [['groups','Groups',groupThreads,groups],['direct','Direct',conversations,directs]].forEach(([kind,label,all,filtered])=>{const button=document.createElement('button');button.type='button';button.className=`conversation-tab ${conversationScope===kind?'active':''}`;button.id=`conversation-tab-${kind}`;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(conversationScope===kind));button.setAttribute('aria-controls','conversation-list');button.tabIndex=conversationScope===kind?0:-1;const title=document.createElement('span');title.textContent=label;const count=document.createElement('strong');count.textContent=String(all.length);button.append(title,count);const unreadTotal=all.reduce((sum,item)=>sum+(Number(item.unread_count)||0),0);if(unreadTotal){const unread=document.createElement('small');unread.className='tab-unread';unread.textContent=`${unreadTotal} unread`;button.append(unread);}button.addEventListener('click',()=>{conversationScope=kind;renderConversations();});button.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight'].includes(event.key))return;event.preventDefault();conversationScope=kind==='groups'?'direct':'groups';renderConversations();$(`#conversation-tab-${conversationScope}`).focus();});tabs.append(button);});
   const isGroups=conversationScope==='groups';const activeItems=isGroups?groups:directs;
-  activeItems.forEach((item)=>{if(isGroups){const button=document.createElement('button');button.type='button';button.className=`conversation-item ${activeGroupChatId===item.project_id?'selected':''}`;const avatar=document.createElement('span');avatar.className=`avatar group-avatar group-avatar-${item.avatar||'violet'}`;avatar.innerHTML=avatarMarkup(item.avatar||'violet','group');avatar.setAttribute('aria-hidden','true');const content=document.createElement('span');content.className='conversation-content';const name=document.createElement('strong');name.textContent=item.name;const last=document.createElement('small');last.textContent=item.last_message||'No messages yet';const activity=document.createElement('small');activity.className='conversation-activity';activity.textContent=formatTimestamp(item.last_message_at||item.created_at);content.append(name,last,activity);button.append(avatar,content);if(item.unread_count){const unread=document.createElement('span');unread.className='unread-pill';unread.textContent=item.unread_count;button.append(unread);}button.addEventListener('click',()=>openGroupConversation(item.project_id));list.append(button);}else{const conversation=item;const button=document.createElement('button');button.type='button';button.className=`conversation-item ${activeConversation?.id===conversation.id?'selected':''}`;const avatar=document.createElement('span');avatar.className='avatar';setAvatar(avatar,{id:conversation.person_id,name:conversation.person_name,avatar:conversation.person_avatar,profile_photo:conversation.person_profile_photo});const content=document.createElement('span');content.className='conversation-content';const name=document.createElement('strong');name.textContent=conversation.person_name;const last=document.createElement('small');last.textContent=conversation.last_message||'No messages yet';const activity=document.createElement('small');activity.className='conversation-activity';activity.textContent=formatTimestamp(conversation.last_message_at||conversation.created_at);content.append(name,last,activity);button.append(avatar,content);if(conversation.unread_count){const unread=document.createElement('span');unread.className='unread-pill';unread.textContent=conversation.unread_count;button.append(unread);}button.addEventListener('click',()=>openConversation(conversation.id));list.append(button);}});
+  activeItems.forEach((item)=>{if(isGroups){const button=document.createElement('button');button.type='button';button.className=`conversation-item ${activeGroupChatId===item.project_id?'selected':''}`;const avatar=document.createElement('span');avatar.className=`avatar group-avatar group-avatar-${item.avatar||'violet'}`;avatar.innerHTML=avatarMarkup(item.avatar||'violet','group');avatar.setAttribute('aria-hidden','true');const content=document.createElement('span');content.className='conversation-content';const name=document.createElement('strong');name.textContent=item.name;const last=document.createElement('small');last.textContent=item.last_message?`${Number(item.last_message_sender_id)===Number(user.id)?'You':item.last_message_sender_name||'Classmate'}: ${item.last_message}`:'No messages yet';const activity=document.createElement('small');activity.className='conversation-activity';activity.textContent=formatTimestamp(item.last_message_at||item.created_at);content.append(name,last,activity);button.append(avatar,content);if(item.unread_count){const unread=document.createElement('span');unread.className='unread-pill';unread.textContent=item.unread_count;button.append(unread);}button.addEventListener('click',()=>openGroupConversation(item.project_id));list.append(button);}else{const conversation=item;const button=document.createElement('button');button.type='button';button.className=`conversation-item ${activeConversation?.id===conversation.id?'selected':''}`;const avatar=document.createElement('span');avatar.className='avatar';setAvatar(avatar,{id:conversation.person_id,name:conversation.person_name,avatar:conversation.person_avatar,profile_photo:conversation.person_profile_photo});const content=document.createElement('span');content.className='conversation-content';const name=document.createElement('strong');name.textContent=conversation.person_name;const last=document.createElement('small');last.textContent=conversation.last_message?(Number(conversation.last_message_sender_id)===Number(user.id)?`You: ${conversation.last_message}`:conversation.last_message):'No messages yet';const activity=document.createElement('small');activity.className='conversation-activity';activity.textContent=formatTimestamp(conversation.last_message_at||conversation.created_at);content.append(name,last,activity);button.append(avatar,content);if(conversation.unread_count){const unread=document.createElement('span');unread.className='unread-pill';unread.textContent=conversation.unread_count;button.append(unread);}button.addEventListener('click',()=>openConversation(conversation.id));list.append(button);}});
   if(!activeItems.length){const empty=document.createElement('p');empty.className='subtle-empty';empty.textContent=search?`No ${isGroups?'groups':'direct conversations'} match your search.`:isGroups?'Your group conversations will appear here.':'Your direct conversations will appear here.';list.append(empty);}
 }
 
@@ -1042,27 +1046,31 @@ $('#friend-search-form').addEventListener('submit',async event=>{event.preventDe
 
 async function openGroupConversation(projectId) {
   const project = projects.find(item => item.id === projectId); if (!project) return;
-  activeGroupChatId = projectId; activeConversation = null; localStorage.setItem('studypilot-chat', JSON.stringify({kind:'group',id:projectId})); stopPolling();
+  activeGroupChatId = projectId; activeConversation = null; replyingTo=null;lastGroupMessageId=0;activeUnreadMarkerId=Number(groupThreads.find(item=>Number(item.project_id)===Number(projectId))?.first_unread_message_id)||null; localStorage.setItem('studypilot-chat', JSON.stringify({kind:'group',id:projectId}));
   const thread=$('#direct-thread');thread.replaceChildren();
   const header=document.createElement('div');header.className='thread-header';const title=document.createElement('h2');title.textContent=project.name;const controls=document.createElement('div');controls.className='thread-controls';const pinned=document.createElement('button');pinned.className='icon-button';setIcon(pinned,'pin');pinned.setAttribute('aria-label','Pinned messages');pinned.title='Pinned messages';pinned.addEventListener('click',()=>showPinnedMessages(projectId));const back=document.createElement('button');back.className='text-button mobile-back';back.textContent='← Conversations';back.addEventListener('click',()=>{$('.inbox').classList.remove('chat-open');});controls.append(pinned,back);header.append(title,controls);
   const stream=document.createElement('div');stream.id='direct-stream';stream.className='direct-stream';
   const form=document.createElement('form');form.className='chat-form direct-form';form.autocomplete='off';form.hidden=project.role==='viewer';const input=document.createElement('input');input.name='message-body';input.type='text';input.required=true;input.maxLength=2000;input.placeholder='Share an update…';input.autocomplete='off';input.setAttribute('aria-label','Group message');const send=document.createElement('button');send.className='primary-button';send.textContent='Send';form.append(input,send);
-  form.addEventListener('submit',async(event)=>{event.preventDefault();try{const payload={body:input.value};if(replyingTo)payload.reply_to_id=replyingTo.id;await post(`/api/projects/${projectId}/messages`,payload);input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));clearReplyTarget();await refreshGroupThread();await loadNotifications();}catch(error){showMessage(error.message);}});
-  thread.append(header,stream,form);$('.inbox').classList.add('chat-open');await refreshGroupThread();
-  pollTimer=setInterval(()=>{if(!document.hidden&&activeGroupChatId===projectId)refreshGroupThread().catch(()=>{});},5000);renderConversations();
+  input.addEventListener('input',dismissUnreadDivider);form.addEventListener('submit',async(event)=>{event.preventDefault();dismissUnreadDivider();try{const payload={body:input.value};if(replyingTo)payload.reply_to_id=replyingTo.id;await post(`/api/projects/${projectId}/messages`,payload);input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));clearReplyTarget();await refreshGroupThread(true);await loadNotifications();}catch(error){showMessage(error.message);}});
+  thread.append(header,stream,form);$('.inbox').classList.add('chat-open');await refreshGroupThread();startInboxPolling();renderConversations();
 }
 
-async function refreshGroupThread() {
+async function refreshGroupThread(full=false) {
   if (!activeGroupChatId) return;
   const stream=$('#direct-stream');if(!stream)return;
-  const nearBottom=stream.scrollHeight-stream.scrollTop-stream.clientHeight<80;const top=stream.scrollTop;
-  const messages=await api(`/api/projects/${activeGroupChatId}/messages`);stream.replaceChildren();
-  if(!messages.length){const empty=document.createElement('div');empty.className='thread-empty';empty.textContent='Start the conversation.';stream.append(empty);updateJumpLatest(stream,nearBottom);return;}
-  messages.forEach(message=>appendChatMessage(stream,message,message.user_id===user.id));
-  if(nearBottom)stream.scrollTop=stream.scrollHeight;else stream.scrollTop=top;
-  updateJumpLatest(stream,nearBottom);
-  lastGroupMessageId=Math.max(0,...messages.map(message=>message.id));
-  groupThreads=await api('/api/group-conversations');updateUnreadCount();renderConversations();
+  const wasLatest=lastMessageFullyVisible(stream);const top=stream.scrollTop;const priorRows=stream.querySelectorAll('.message-row').length;const initialLoad=lastGroupMessageId===0;
+  if(full)lastGroupMessageId=0;
+  const marker=Number(groupThreads.find(item=>Number(item.project_id)===Number(activeGroupChatId))?.first_unread_message_id)||null;
+  if(marker&&marker!==activeUnreadMarkerId){activeUnreadMarkerId=marker;}
+  const readNow=wasLatest&&!document.hidden&&!initialLoad;
+  const messages=await api(`/api/projects/${activeGroupChatId}/messages?after_id=${full?0:lastGroupMessageId}&mark_read=${readNow}`);
+  if(full||lastGroupMessageId===0){stream.replaceChildren();}
+  if(!messages.length&&lastGroupMessageId===0){const empty=document.createElement('div');empty.className='thread-empty';empty.textContent='Start the conversation.';stream.append(empty);}
+  messages.forEach(message=>{appendChatMessage(stream,message,message.user_id===user.id);lastGroupMessageId=Math.max(lastGroupMessageId,Number(message.id));});
+  if(messages.length&&wasLatest){stream.scrollTop=stream.scrollHeight;}else if(messages.length){stream.scrollTop=top;}
+  if(priorRows===0&&activeUnreadMarkerId){positionAtUnreadDivider(stream);if(lastMessageFullyVisible(stream)&&!document.hidden)await api(`/api/projects/${activeGroupChatId}/messages?after_id=${lastGroupMessageId}&mark_read=true`);}
+  updateJumpLatest(stream);
+  const [updatedGroups,updatedDirects]=await Promise.all([api('/api/group-conversations'),api('/api/direct/conversations')]);groupThreads=updatedGroups;conversations=updatedDirects;updateUnreadCount();renderConversations();
 }
 
 async function openDirectConversation(personId) {
@@ -1077,33 +1085,40 @@ async function openDirectConversation(personId) {
 async function openConversation(conversationId) {
   activeGroupChatId = null;
   activeConversation = conversations.find((item) => item.id === conversationId) || { id: conversationId };
+  replyingTo=null;activeUnreadMarkerId=Number(activeConversation.first_unread_message_id)||null;
   localStorage.setItem('studypilot-chat', JSON.stringify({kind:'direct',id:conversationId}));
   lastDirectMessageId = 0;
   const thread = $('#direct-thread'); thread.replaceChildren();
   const header = document.createElement('div'); header.className = 'thread-header'; const title = document.createElement('h2'); title.textContent = activeConversation.person_name || 'Private conversation'; const controls=document.createElement('div');controls.className='thread-controls';const pinned=document.createElement('button');pinned.className='icon-button';setIcon(pinned,'pin');pinned.setAttribute('aria-label','Pinned messages');pinned.title='Pinned messages';pinned.addEventListener('click',()=>showDirectPinnedMessages(conversationId));const back=document.createElement('button');back.className='text-button mobile-back';back.textContent='← Conversations';back.addEventListener('click',()=>$('.inbox').classList.remove('chat-open'));controls.append(pinned,back);header.append(title,controls);
   const stream = document.createElement('div'); stream.id = 'direct-stream'; stream.className = 'direct-stream';
-  const form = document.createElement('form'); form.className = 'chat-form direct-form'; form.autocomplete='off';const input = document.createElement('input'); input.name = 'message-body';input.type='text'; input.required = true; input.maxLength = 2000; input.placeholder = 'Write a message…';input.autocomplete='off'; input.setAttribute('aria-label', 'Private message'); const send = document.createElement('button'); send.className = 'primary-button'; send.textContent = 'Send'; form.append(input, send); form.addEventListener('submit', async (event) => { event.preventDefault(); try {const payload={body:input.value};if(replyingTo)payload.reply_to_id=replyingTo.id;await post(`/api/direct/conversations/${activeConversation.id}/messages`,payload);input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));clearReplyTarget();await loadDirectMessages();await loadConversations();renderConversations();} catch (error) { showMessage(error.message); } });
+  const form = document.createElement('form'); form.className = 'chat-form direct-form'; form.autocomplete='off';const input = document.createElement('input'); input.name = 'message-body';input.type='text'; input.required = true; input.maxLength = 2000; input.placeholder = 'Write a message…';input.autocomplete='off'; input.setAttribute('aria-label', 'Private message'); const send = document.createElement('button'); send.className = 'primary-button'; send.textContent = 'Send'; form.append(input, send);input.addEventListener('input',dismissUnreadDivider); form.addEventListener('submit', async (event) => { event.preventDefault();dismissUnreadDivider(); try {const payload={body:input.value};if(replyingTo)payload.reply_to_id=replyingTo.id;await post(`/api/direct/conversations/${activeConversation.id}/messages`,payload);input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));clearReplyTarget();await loadDirectMessages(true,true);await loadConversations();renderConversations();} catch (error) { showMessage(error.message); } });
   thread.append(header, stream, form);$('.inbox').classList.add('chat-open');
-  try { await loadDirectMessages(); await loadConversations(); renderConversations(); } catch (error) { showMessage(error.message); }
-  stopPolling(); pollTimer = setInterval(() => { if (!document.hidden && activeConversation) { loadDirectMessages(true).then(loadConversations).then(renderConversations).catch(() => {}); } }, 4000);
+  try { await loadDirectMessages(false,!activeUnreadMarkerId); await loadConversations();if(activeUnreadMarkerId){positionAtUnreadDivider(stream);if(lastMessageFullyVisible(stream))await loadDirectMessages(false,true);} renderConversations(); } catch (error) { showMessage(error.message); }
+  startInboxPolling();
   renderConversations();
 }
 
-async function loadDirectMessages(refreshAll = false) {
+async function loadDirectMessages(refreshAll = false, markRead = false) {
   if (!activeConversation) return;
   const stream = $('#direct-stream'); if (!stream) return;
-  const nearBottom=stream.scrollHeight-stream.scrollTop-stream.clientHeight<80;const top=stream.scrollTop;
-  const messages = await api(`/api/direct/conversations/${activeConversation.id}/messages${refreshAll?`?after_id=0`:`?after_id=${lastDirectMessageId}`}`);
+  const wasLatest=lastMessageFullyVisible(stream);const top=stream.scrollTop;
+  const readNow=Boolean(markRead||(wasLatest&&!document.hidden&&!activeUnreadMarkerId));
+  const messages = await api(`/api/direct/conversations/${activeConversation.id}/messages?after_id=${refreshAll?0:lastDirectMessageId}&mark_read=${readNow}`);
   if ((lastDirectMessageId === 0 || refreshAll) && messages.length) stream.replaceChildren();
   if (refreshAll) lastDirectMessageId = 0;
   if (!messages.length && lastDirectMessageId === 0) stream.textContent = 'Say hello and get the conversation started.';
   messages.forEach((message) => { appendChatMessage(stream, message, message.sender_id === user.id); lastDirectMessageId = Math.max(lastDirectMessageId, message.id); });
-  if (messages.length) { if(nearBottom)stream.scrollTop=stream.scrollHeight;else stream.scrollTop=top; }
-  updateJumpLatest(stream,nearBottom);
+  if (messages.length) { if(wasLatest)stream.scrollTop=stream.scrollHeight;else stream.scrollTop=top; }
+  if(lastDirectMessageId&&activeUnreadMarkerId&&stream.querySelectorAll('.message-row').length===messages.length)positionAtUnreadDivider(stream);
+  updateJumpLatest(stream);
 }
 
-function updateJumpLatest(stream,nearBottom){let button=$('.jump-latest',stream);if(nearBottom){button?.remove();return;}if(!button){button=document.createElement('button');button.type='button';button.className='jump-latest';button.textContent='↓ Latest message';button.setAttribute('aria-label','Jump to latest message');button.addEventListener('click',()=>{stream.scrollTop=stream.scrollHeight;button.remove();});stream.append(button);}button.hidden=false;}
-document.addEventListener('scroll',event=>{const stream=event.target;if(!(stream instanceof HTMLElement)||!stream.classList.contains('direct-stream'))return;if(stream.scrollHeight-stream.scrollTop-stream.clientHeight<80)$('.jump-latest',stream)?.remove();},{passive:true,capture:true});
+function lastMessageFullyVisible(stream){const last=stream?.querySelector('.message-row:last-of-type');if(!last)return true;const s=stream.getBoundingClientRect(),m=last.getBoundingClientRect();return m.top>=s.top&&m.bottom<=s.bottom;}
+function updateJumpLatest(stream){if(!stream)return;let button=$('.jump-latest',stream);const latestVisible=lastMessageFullyVisible(stream);if(latestVisible){button?.remove();return;}if(!button){button=document.createElement('button');button.type='button';button.className='jump-latest';button.textContent='↓ Latest message';button.setAttribute('aria-label','Jump to latest message');button.addEventListener('click',()=>{stream.scrollTop=stream.scrollHeight;updateJumpLatest(stream);});stream.append(button);}}
+function unreadMarkerKey(){return activeGroupChatId?`g:${activeGroupChatId}:${activeUnreadMarkerId}`:`d:${activeConversation?.id}:${activeUnreadMarkerId}`;}
+function dismissUnreadDivider(){const key=unreadMarkerKey();if(activeUnreadMarkerId)dismissedUnreadMarkers.add(key);$('.new-messages-divider',$('#direct-stream'))?.remove();}
+function positionAtUnreadDivider(stream){const divider=stream.querySelector('.new-messages-divider');if(!divider)return;const preceding=[...stream.querySelectorAll('.message-row')].filter(row=>row.compareDocumentPosition(divider)&Node.DOCUMENT_POSITION_FOLLOWING);const visibleRows=Math.min(3,preceding.length);const offset=visibleRows?preceding.slice(-visibleRows).reduce((height,row)=>height+row.getBoundingClientRect().height,0):0;stream.scrollTop=Math.max(0,divider.offsetTop-offset-stream.offsetTop);}
+document.addEventListener('scroll',event=>{const stream=event.target;if(!(stream instanceof HTMLElement)||!stream.classList.contains('direct-stream'))return;updateJumpLatest(stream);},{passive:true,capture:true});
 
 $('#notification-button').addEventListener('click', async () => {
   try { await loadNotifications(); $('#notifications-dialog').showModal(); }
@@ -1113,20 +1128,22 @@ $('#notification-button').addEventListener('click', async () => {
 async function loadNotifications() {
   const records = await api('/api/notifications');
   $('#notification-dot').hidden = !records.some((item) => !item.read_at);
-  const panel = $('#notifications-list'); panel.replaceChildren();
-  if (!records.length) { panel.textContent = 'You’re all caught up.'; syncNotificationSelection(0); return; }
-  records.forEach((record) => { const item = document.createElement('article'); item.className = `notification-item ${record.read_at ? '' : 'unread'}`; const check=document.createElement('input');check.type='checkbox';check.className='notification-check';check.value=record.id;check.setAttribute('aria-label',`Select notification from ${record.actor||'StudyPilot'}`);check.addEventListener('change',()=>syncNotificationSelection(records.length));const content=document.createElement('div');content.className='notification-copy'; const text = document.createElement('p'); text.textContent = `${record.actor || 'A teammate'} ${record.detail}`; const time = document.createElement('small'); time.textContent = formatTimestamp(record.created_at);content.append(text,time);if(record.kind==='group_join_request'&&record.project_id&&record.project_name){const link=document.createElement('a');link.className='notification-link';link.href=`#/groups/${record.project_id}?requests=1`;link.textContent=`Manage requests · ${record.project_name}`;link.addEventListener('click',()=>patch('/api/notifications',{action:'read',ids:[record.id]}).catch(()=>{}));content.append(link);}const read=document.createElement('button');read.type='button';read.className='text-button notification-read';read.textContent=record.read_at?'Mark unread':'Mark read';read.addEventListener('click',async()=>{await patch('/api/notifications',{action:record.read_at?'unread':'read',ids:[record.id]});await loadNotifications();});item.append(check,content,read); panel.append(item); });
-  syncNotificationSelection(records.length);
+  const known=new Set(records.map(record=>String(record.id)));for(const id of selectedNotificationIds)if(!known.has(id))selectedNotificationIds.delete(id);
+  const isMessage=record=>String(record.kind||'').includes('message');const groups=[['all','All',records],['messages','Messages',records.filter(isMessage)],['other','Other',records.filter(record=>!isMessage(record))]];const tabs=$('#notification-tabs');tabs.replaceChildren();groups.forEach(([key,label,items])=>{const button=document.createElement('button');button.type='button';button.className=`notification-tab ${notificationFilter===key?'active':''}`;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(notificationFilter===key));button.textContent=`${label} ${items.length}`;button.addEventListener('click',()=>{notificationFilter=key;loadNotifications();});tabs.append(button);});
+  const visible=groups.find(([key])=>key===notificationFilter)?.[2]||records;const panel = $('#notifications-list'); panel.replaceChildren();
+  if (!visible.length) { panel.textContent = records.length?'No notifications in this tab.':'You’re all caught up.'; syncNotificationSelection(); return; }
+  visible.forEach((record) => { const item = document.createElement('article'); item.className = `notification-item ${record.read_at ? '' : 'unread'}`; const check=document.createElement('input');check.type='checkbox';check.className='notification-check';check.value=record.id;check.checked=selectedNotificationIds.has(String(record.id));check.setAttribute('aria-label',`Select notification from ${record.actor||'StudyPilot'}`);check.addEventListener('change',()=>{if(check.checked)selectedNotificationIds.add(String(record.id));else selectedNotificationIds.delete(String(record.id));syncNotificationSelection(visible.length);});const content=document.createElement('div');content.className='notification-copy'; const text = document.createElement('p');const actor=record.actor||'A teammate';text.textContent=record.kind==='direct_message'?`You received a new message from ${actor}`:record.kind==='group_message'?`New message from ${actor} in ${record.project_name||'your group'}`:`${actor}: ${record.detail||'You have a new notification.'}`; const time = document.createElement('small'); time.textContent = formatTimestamp(record.created_at);content.append(text,time);if(record.kind==='group_join_request'&&record.project_id&&record.project_name){const link=document.createElement('a');link.className='notification-link';link.href=`#/groups/${record.project_id}?requests=1`;link.textContent=`Manage requests · ${record.project_name}`;link.addEventListener('click',()=>patch('/api/notifications',{action:'read',ids:[record.id]}).catch(()=>{}));content.append(link);}const read=document.createElement('button');read.type='button';read.className='text-button notification-read';read.textContent=record.read_at?'Mark unread':'Mark read';read.addEventListener('click',async()=>{await patch('/api/notifications',{action:record.read_at?'unread':'read',ids:[record.id]});await loadNotifications();});item.append(check,content,read); panel.append(item); });
+  syncNotificationSelection(visible.length);
 }
 
-function syncNotificationSelection(total) {
-  const selected=$$('.notification-check:checked').length;$('#notification-selection-count').textContent=`${selected} selected`;
+function syncNotificationSelection(total=$$('.notification-check').length) {
+  const selected=selectedNotificationIds.size;$('#notification-selection-count').textContent=`${selected} selected`;
   $('#notification-delete-selected').disabled=!selected;
-  const all=$('#notification-select-all');all.checked=total>0&&selected===total;all.indeterminate=selected>0&&selected<total;
+  const visibleSelected=$$('.notification-check:checked').length;const all=$('#notification-select-all');all.checked=total>0&&visibleSelected===total;all.indeterminate=visibleSelected>0&&visibleSelected<total;
 }
 
-$('#notification-select-all').addEventListener('change',event=>{$$('.notification-check').forEach(box=>box.checked=event.currentTarget.checked);syncNotificationSelection($$('.notification-check').length);});
-$('#notification-delete-selected').addEventListener('click',async()=>{const ids=$$('.notification-check:checked').map(box=>Number(box.value));if(!ids.length)return;try{await patch('/api/notifications',{action:'delete',ids});await loadNotifications();}catch(error){showMessage(error.message);}});
+$('#notification-select-all').addEventListener('change',event=>{$$('.notification-check').forEach(box=>{box.checked=event.currentTarget.checked;if(box.checked)selectedNotificationIds.add(String(box.value));else selectedNotificationIds.delete(String(box.value));});syncNotificationSelection($$('.notification-check').length);});
+$('#notification-delete-selected').addEventListener('click',async()=>{const ids=[...selectedNotificationIds].map(Number);if(!ids.length)return;if(!await requestConfirmation({title:'Delete selected notifications?',message:`Delete ${ids.length} selected notification${ids.length===1?'':'s'}? This cannot be undone.`,confirmLabel:`Delete ${ids.length}`,danger:true}))return;try{await patch('/api/notifications',{action:'delete',ids});ids.forEach(id=>selectedNotificationIds.delete(String(id)));await loadNotifications();}catch(error){showMessage(error.message);}});
 $('#notification-clear-all').addEventListener('click',async()=>{if(!await requestConfirmation({title:'Clear notifications?',message:'All notifications will be removed.',confirmLabel:'Clear all',danger:true}))return;try{await api('/api/notifications',{method:'DELETE'});await loadNotifications();}catch(error){showMessage(error.message);}});
 
 $('#account-button').addEventListener('click', () => { closeOtherMenus(null);$('#account-menu').hidden = !$('#account-menu').hidden; });

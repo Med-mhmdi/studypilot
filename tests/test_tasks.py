@@ -180,6 +180,8 @@ def test_direct_messages_are_private_to_shared_group_participants(tmp_path, monk
             assert alice.get("/api/direct/conversations").json()[0]["unread_count"] == 1
             received = alice.get(f"/api/direct/conversations/{conversation_id}/messages")
             assert received.status_code == 200 and received.json()[0]["body"] == "Can you review chapter two?"
+            assert alice.get("/api/direct/conversations").json()[0]["unread_count"] == 1
+            alice.get(f"/api/direct/conversations/{conversation_id}/messages", params={"mark_read": "true"})
             assert alice.get("/api/direct/conversations").json()[0]["unread_count"] == 0
             reply = alice.post(f"/api/direct/conversations/{conversation_id}/messages", json={"body": "Yes, I will."})
             assert reply.status_code == 201
@@ -309,6 +311,8 @@ def test_shareable_join_code_request_approval_rotation_and_unread(tmp_path, monk
             message = owner.post(f"/api/projects/{project['id']}/messages", json={"body": "Welcome"}).json()
             assert student.get("/api/group-conversations").json()[0]["unread_count"] == 1
             assert student.get(f"/api/projects/{project['id']}/messages").json()[0]["id"] == message["id"]
+            assert student.get("/api/group-conversations").json()[0]["unread_count"] == 1
+            student.get(f"/api/projects/{project['id']}/messages", params={"mark_read": "true"})
             assert student.get("/api/group-conversations").json()[0]["unread_count"] == 0
             rotated = owner.post(f"/api/projects/{project['id']}/join-code/rotate").json()["code"]
             assert rotated != code
@@ -364,7 +368,7 @@ def test_message_replies_group_avatar_and_unread_counts(tmp_path, monkeypatch):
             assert mate.post(f"/api/projects/{project['id']}/messages", json={"body": "bad reference", "reply_to_id": 987654}).status_code == 404
             assert owner.get("/api/group-conversations").json()[0]["unread_count"] == 1
             assert owner.get("/api/group-conversations").json()[0]["unread_count"] == 1
-            owner.get(f"/api/projects/{project['id']}/messages")
+            owner.get(f"/api/projects/{project['id']}/messages", params={"mark_read": "true"})
             assert owner.get("/api/group-conversations").json()[0]["unread_count"] == 0
 
             direct = owner.post("/api/direct/conversations", json={"recipient_id": 2}).json()
@@ -376,6 +380,8 @@ def test_message_replies_group_avatar_and_unread_counts(tmp_path, monkeypatch):
             assert mate.post(f"/api/direct/conversations/{direct_id}/messages", json={"body": "missing target", "reply_to_id": 987654}).status_code == 404
             assert owner.get("/api/direct/conversations").json()[0]["unread_count"] == 1
             assert owner.get(f"/api/direct/conversations/{direct_id}/messages").status_code == 200
+            assert owner.get("/api/direct/conversations").json()[0]["unread_count"] == 1
+            owner.get(f"/api/direct/conversations/{direct_id}/messages", params={"mark_read": "true"})
             assert owner.get("/api/direct/conversations").json()[0]["unread_count"] == 0
 
 
