@@ -41,7 +41,8 @@ class ProjectCreate(RequestModel):
 
 class NotificationAction(RequestModel):
     action: str = Field(pattern=r"^(read|unread|delete)$")
-    ids: list[int] = Field(default_factory=list, max_length=50)
+    ids: list[int] = Field(default_factory=list, max_length=5000)
+    scope: str = Field(default="all", pattern=r"^(all|messages|other)$")
 
 
 class ProjectUpdate(RequestModel):

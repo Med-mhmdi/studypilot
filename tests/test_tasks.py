@@ -469,6 +469,29 @@ def test_notification_bulk_actions_are_scoped_to_the_signed_in_user(tmp_path, mo
             assert bob.get("/api/notifications").json()[0]["id"] == bob_id
 
 
+def test_notification_deletion_scope_preserves_other_tabs_and_users(tmp_path, monkeypatch):
+    path = tmp_path / "notification-scopes.db"
+    with client_for(path, monkeypatch) as alice:
+        register(alice, "alice-scopes@example.edu", "Alice")
+        with TestClient(app) as bob:
+            register(bob, "bob-scopes@example.edu", "Bob")
+            with sqlite3.connect(path) as con:
+                con.executemany(
+                    "INSERT INTO notifications(user_id,kind,detail) VALUES(1,?,?)",
+                    [("direct_message", "Message one"), ("group_message", "Message two"), ("friend_request", "Other one")],
+                )
+                con.execute("INSERT INTO notifications(user_id,kind,detail) VALUES(2,'direct_message','Bob message')")
+            records = alice.get("/api/notifications").json()
+            messages = {item["id"] for item in records if "message" in item["kind"]}
+            other = {item["id"] for item in records if "message" not in item["kind"]}
+            assert len(messages) == 2 and len(other) == 1
+            assert alice.patch("/api/notifications", json={"action":"delete","ids":list(messages),"scope":"messages"}).json()["updated"] == 2
+            assert {item["id"] for item in alice.get("/api/notifications").json()} == other
+            assert alice.patch("/api/notifications", json={"action":"delete","scope":"other"}).json()["updated"] == 1
+            assert alice.get("/api/notifications").json() == []
+            assert bob.get("/api/notifications").json()[0]["detail"] == "Bob message"
+
+
 def test_group_role_permissions_and_ownership_transfer(tmp_path, monkeypatch):
     with client_for(tmp_path / "roles.db", monkeypatch) as owner:
         register(owner, "owner@example.edu", "Owner")

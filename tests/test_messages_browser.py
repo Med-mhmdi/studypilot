@@ -58,7 +58,7 @@ def test_messages_browser_group_direct_reply_unread_and_responsive(tmp_path, mon
             mate = browser.new_context(viewport={"width": 1280, "height": 900})
             _ok(owner.request.post(f"{base_url}/api/auth/register", data={"email": "owner@example.edu", "username": "owner", "name": "Owner", "password": "study-together-123"}))
             _ok(mate.request.post(f"{base_url}/api/auth/register", data={"email": "mate@example.edu", "username": "mate", "name": "Mate", "password": "study-together-123"}))
-            project = owner.request.post(f"{base_url}/api/projects", data={"name": "Leaf crew", "description": "", "avatar": "mint"}).json()
+            project = owner.request.post(f"{base_url}/api/projects", data={"name": "Leaf crew notification wrapping test", "description": "", "avatar": "mint"}).json()
             code = owner.request.get(f"{base_url}/api/projects/{project['id']}").json()["join_code"]
             _ok(mate.request.post(f"{base_url}/api/projects/join-requests", data={"code": code}))
             pending = owner.request.get(f"{base_url}/api/projects/{project['id']}/join-requests").json()[0]
@@ -213,22 +213,48 @@ def test_messages_browser_group_direct_reply_unread_and_responsive(tmp_path, mon
             page.locator("#notification-button").click()
             expect(page.locator("#notification-tabs")).to_contain_text("Messages")
             page.get_by_role("tab", name="Messages", exact=False).click()
-            expect(page.get_by_text("You received a new message from Mate", exact=True)).to_be_visible()
+            expect(page.get_by_role("tab", name="Messages", exact=False)).to_have_attribute("aria-selected", "true")
+            expect(page.get_by_text("You received a new message from Mate.", exact=True)).to_be_visible()
+            message_count = page.locator(".notification-item").count()
+            page.locator("#notification-select-all").check()
+            expect(page.locator("#notification-selection-count")).to_have_text(f"{message_count} selected")
+            page.get_by_role("tab", name="Other", exact=False).click()
+            expect(page.get_by_role("tab", name="Other", exact=False)).to_have_attribute("aria-selected", "true")
+            expect(page.locator("#notification-selection-count")).to_have_text("0 selected")
+            expect(page.get_by_role("button", name="Delete selected")).to_be_disabled()
+            expect(page.locator(".notification-item")).to_contain_text('Mate requested to join your group "Leaf crew notification wrapping test".')
+            link_bounds = page.locator(".notification-link").evaluate("el => {const t=el.parentElement.querySelector('.notification-time').getBoundingClientRect(),l=el.getBoundingClientRect(),c=el.closest('.notification-item').getBoundingClientRect();return {timeBottom:t.bottom,linkTop:l.top,cardLeft:c.left,cardRight:c.right,linkRight:l.right};}")
+            assert link_bounds["linkTop"] >= link_bounds["timeBottom"] and link_bounds["linkRight"] <= link_bounds["cardRight"]
+            page.get_by_role("tab", name="Messages", exact=False).click()
+            expect(page.get_by_role("tab", name="Messages", exact=False)).to_have_attribute("aria-selected", "true")
+            expect(page.locator("#notification-select-all")).to_be_checked()
+            page.locator("#notification-select-all").uncheck()
+            expect(page.locator("#notification-selection-count")).to_have_text("0 selected")
             page.get_by_label("Select notification from Mate").first.check()
             page.get_by_role("button", name="Delete selected").click()
             expect(page.locator("#action-confirm-dialog")).to_be_visible()
             expect(page.locator("#action-confirm-dialog .confirm-message")).to_contain_text("1 selected notification")
             page.locator("#action-confirm-dialog").get_by_role("button", name="Cancel").click()
-            expect(page.get_by_text("You received a new message from Mate", exact=True)).to_be_visible()
+            expect(page.get_by_text("You received a new message from Mate.", exact=True)).to_be_visible()
             page.get_by_role("button", name="Delete selected").click()
             page.locator("#action-confirm-dialog").get_by_role("button", name="Delete 1").click()
-            expect(page.get_by_text("You received a new message from Mate", exact=True)).to_have_count(0)
+            expect(page.get_by_text("You received a new message from Mate.", exact=True)).to_have_count(0)
+            message_count = page.locator(".notification-item").count()
+            assert message_count > 0
+            page.get_by_role("button", name="Clear all").click()
+            expect(page.locator("#action-confirm-dialog .confirm-message")).to_contain_text(f"all {message_count} message notifications")
+            page.locator("#action-confirm-dialog").get_by_role("button", name="Cancel").click()
+            expect(page.locator(".notification-item")).to_have_count(message_count)
+            page.get_by_role("button", name="Clear all").click()
+            page.locator("#action-confirm-dialog").get_by_role("button", name=f"Clear {message_count}").click()
+            expect(page.locator(".notification-item")).to_have_count(0)
             page.get_by_role("tab", name="Other", exact=False).click()
             if page.locator(".notification-item").count():
+                other_count = page.locator(".notification-item").count()
                 page.get_by_role("button", name="Clear all").click()
                 expect(page.locator("#action-confirm-dialog")).to_be_visible()
                 page.locator("#action-confirm-dialog").get_by_role("button", name="Cancel").click()
-                expect(page.locator(".notification-item").first).to_be_visible()
+                expect(page.locator(".notification-item")).to_have_count(other_count)
             page.locator("#notifications-dialog").get_by_role("button", name="Close").click()
 
             # A direct unread batch establishes a fresh divider with older context, and scroll alone does not dismiss it.
@@ -249,8 +275,8 @@ def test_messages_browser_group_direct_reply_unread_and_responsive(tmp_path, mon
             page.locator("#direct-stream").evaluate("el => el.scrollTop=el.scrollHeight")
             expect(page.locator(".new-messages-divider")).to_be_visible()
             for short_text in ("Direct hello", "Unread direct batch two"):
-                short_bubble = page.locator("#direct-stream .message-bubble").filter(has_text=short_text).last
-                assert page.evaluate("el => { const r=document.createRange();r.selectNodeContents(el);return r.getBoundingClientRect().height<=parseFloat(getComputedStyle(el).lineHeight)+1; }", short_bubble.element_handle())
+                short_bubble = page.locator("#direct-stream p.message-bubble").filter(has_text=short_text).last
+                assert page.evaluate("el => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => { const r=document.createRange();r.selectNodeContents(el);resolve(r.getBoundingClientRect().height<=parseFloat(getComputedStyle(el).lineHeight)+1); })))", short_bubble.element_handle())
             page.get_by_role("textbox", name="Private message").fill("Typing dismisses divider")
             expect(page.locator(".new-messages-divider")).to_have_count(0)
 
@@ -304,7 +330,7 @@ def test_conversation_controls_and_notification_layout_browser(tmp_path, monkeyp
             mate = browser.new_context(viewport={"width": 1280, "height": 900})
             _ok(owner.request.post(f"{base_url}/api/auth/register", data={"email": "owner-controls@example.edu", "username": "ownercontrols", "name": "Owner", "password": "study-together-123"}))
             _ok(mate.request.post(f"{base_url}/api/auth/register", data={"email": "mate-controls@example.edu", "username": "matecontrols", "name": "Mate with a deliberately long display name for wrapping coverage", "password": "study-together-123"}))
-            project = owner.request.post(f"{base_url}/api/projects", data={"name": "Leaf crew", "description": "", "avatar": "mint"}).json()
+            project = owner.request.post(f"{base_url}/api/projects", data={"name": "Leaf crew notification wrapping test", "description": "", "avatar": "mint"}).json()
             code = owner.request.get(f"{base_url}/api/projects/{project['id']}").json()["join_code"]
             _ok(mate.request.post(f"{base_url}/api/projects/join-requests", data={"code": code}))
             pending = owner.request.get(f"{base_url}/api/projects/{project['id']}/join-requests").json()[0]
@@ -364,11 +390,37 @@ def test_conversation_controls_and_notification_layout_browser(tmp_path, monkeyp
 
             page.set_viewport_size({"width": 1280, "height": 900})
             page.locator("#conversation-tab-direct").click()
+            sidebar_metrics = page.locator("#conversation-list").evaluate("el => ({height:el.clientHeight,scrollHeight:el.scrollHeight,overflow:getComputedStyle(el).overflowY})")
+            assert sidebar_metrics["height"] > 0 and sidebar_metrics["scrollHeight"] <= sidebar_metrics["height"] + 1
+            assert sidebar_metrics["overflow"] == "auto"
+            page.locator("#conversation-list").evaluate("el => { const row=el.querySelector('.conversation-row'); for(let i=0;i<16;i++){const clone=row.cloneNode(true);clone.dataset.layoutProbe=String(i);el.append(clone);} }")
+            long_list_metrics = page.locator("#conversation-list").evaluate("el => ({height:el.clientHeight,scrollHeight:el.scrollHeight})")
+            assert long_list_metrics["scrollHeight"] > long_list_metrics["height"]
+            page.locator("#conversation-list [data-layout-probe]").evaluate_all("rows => rows.forEach(row=>row.remove())")
+            for width, theme in ((1280, "light"), (1280, "dark"), (1600, "light"), (1600, "dark"), (390, "light"), (390, "dark")):
+                page.set_viewport_size({"width": width, "height": 844 if width == 390 else 900})
+                page.evaluate("theme => document.documentElement.dataset.theme = theme", theme)
+                fit = page.locator("#conversation-list").evaluate("el => ({height:el.clientHeight,scrollHeight:el.scrollHeight})")
+                assert fit["height"] > 0 and fit["scrollHeight"] <= fit["height"] + 1
+                page.locator('summary[aria-label="Conversation actions for Bro Med"]').focus()
+                page.keyboard.press("Enter")
+                expect(page.locator(".conversation-action-list")).to_be_visible()
+                expect(page.locator(".conversation-action-list")).to_have_css("position", "fixed")
+                bounds = page.locator(".conversation-action-list").evaluate("el => {const r=el.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,position:getComputedStyle(el).position};}")
+                assert bounds["position"] == "fixed" and bounds["left"] >= 0 and bounds["right"] <= width
+                page.keyboard.press("Escape")
+                expect(page.locator(".conversation-actions-menu[open]")).to_have_count(0)
             page.set_viewport_size({"width": 390, "height": 844})
             mobile_menu=page.locator('summary[aria-label="Conversation actions for Bro Med"]')
             mobile_menu.focus()
             page.keyboard.press("Enter")
             expect(page.locator(".conversation-action-list")).to_be_visible()
+            menu_metrics=page.locator(".conversation-action-list").evaluate("el => {const r=el.getBoundingClientRect();return {position:getComputedStyle(el).position,left:r.left,right:r.right,top:r.top,bottom:r.bottom};}")
+            assert menu_metrics["position"] == "fixed" and menu_metrics["left"] >= 0 and menu_metrics["right"] <= 390
+            expect(page.locator(".conversation-action-list .menu-danger")).to_have_css("color", "rgb(255, 133, 142)")
+            page.evaluate("document.documentElement.dataset.theme = 'light'")
+            expect(page.locator(".conversation-action-list .menu-danger")).to_have_css("color", "rgb(196, 62, 76)")
+            page.evaluate("document.documentElement.dataset.theme = 'dark'")
             page.keyboard.press("Escape")
             expect(page.locator(".conversation-actions-menu[open]")).to_have_count(0)
             page.set_viewport_size({"width": 1280, "height": 900})
@@ -384,11 +436,13 @@ def test_conversation_controls_and_notification_layout_browser(tmp_path, monkeyp
             composer.fill("New after clear")
             mate_page.get_by_role("button", name="Send").click()
             page.locator(".conversation-item").click()
-            expect(page.get_by_text("New after clear", exact=True)).to_be_visible(timeout=9000)
+            expect(page.locator("#direct-stream .message-bubble").filter(has_text="New after clear")).to_be_visible(timeout=9000)
             page.locator('summary[aria-label="Conversation actions for Bro Med"]').click()
             page.locator(".conversation-action-list").get_by_role("button", name="Archive conversation").click()
             page.locator("#archived-conversations-toggle").click()
             expect(page.locator(".conversation-item strong")).to_have_text("Bro Med")
+            archived_metrics = page.locator("#conversation-list").evaluate("el => ({height:el.clientHeight,scrollHeight:el.scrollHeight})")
+            assert archived_metrics["height"] > 0 and archived_metrics["scrollHeight"] <= archived_metrics["height"] + 1
             page.locator('summary[aria-label="Conversation actions for Bro Med"]').click()
             page.locator(".conversation-action-list").get_by_role("button", name="Unarchive conversation").click()
             page.locator("#archived-conversations-toggle").click()

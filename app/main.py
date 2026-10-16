@@ -1159,7 +1159,7 @@ def activity(user: User, limit: int = Query(default=30, ge=1, le=100)):
 def notifications(user: User):
     with db.connect() as con:
         return [dict(row) for row in con.execute("""SELECT n.id,n.project_id,n.kind,n.detail,n.read_at,n.created_at,u.name AS actor,p.name AS project_name
-            FROM notifications n LEFT JOIN users u ON u.id=n.actor_id LEFT JOIN projects p ON p.id=n.project_id WHERE n.user_id=? ORDER BY n.id DESC LIMIT 50""", (user["id"],)).fetchall()]
+            FROM notifications n LEFT JOIN users u ON u.id=n.actor_id LEFT JOIN projects p ON p.id=n.project_id WHERE n.user_id=? ORDER BY n.id DESC""", (user["id"],)).fetchall()]
 
 
 @app.post("/api/notifications/read", status_code=204)
@@ -1171,15 +1171,24 @@ def mark_notifications_read(user: User):
 
 @app.patch("/api/notifications")
 def update_notifications(body: NotificationAction, user: User):
-    if not body.ids:
+    if body.action != "delete" and not body.ids:
         raise HTTPException(status_code=422, detail="select at least one notification")
-    placeholders = ",".join("?" for _ in body.ids)
+    predicates = ["user_id=?"]
+    params: list[object] = [user["id"]]
+    if body.scope == "messages":
+        predicates.append("kind LIKE '%message%'")
+    elif body.scope == "other":
+        predicates.append("kind NOT LIKE '%message%'")
+    if body.ids:
+        predicates.append("id IN (" + ",".join("?" for _ in body.ids) + ")")
+        params.extend(body.ids)
+    where = " AND ".join(predicates)
     with db.connect() as con:
         if body.action == "delete":
-            cursor = con.execute(f"DELETE FROM notifications WHERE user_id=? AND id IN ({placeholders})", [user["id"], *body.ids])
+            cursor = con.execute(f"DELETE FROM notifications WHERE {where}", params)
         else:
             read_expr = "strftime('%Y-%m-%dT%H:%M:%SZ','now')" if body.action == "read" else "NULL"
-            cursor = con.execute(f"UPDATE notifications SET read_at={read_expr} WHERE user_id=? AND id IN ({placeholders})", [user["id"], *body.ids])
+            cursor = con.execute(f"UPDATE notifications SET read_at={read_expr} WHERE {where}", params)
         return {"updated": cursor.rowcount}
 
 

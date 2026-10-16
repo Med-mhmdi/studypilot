@@ -1139,26 +1139,88 @@ $('#notification-button').addEventListener('click', async () => {
   catch (error) { showMessage(error.message); }
 });
 
+function notificationMessage(record) {
+  const actor = record.actor || 'A classmate';
+  const group = record.project_name || 'your group';
+  switch (record.kind) {
+    case 'friend_request': return `You received a classmate request from ${actor}.`;
+    case 'friend_request_accepted': return `${actor} accepted your classmate request.`;
+    case 'friend_request_declined': return `${actor} declined your classmate request.`;
+    case 'friend_request_cancelled': return `${actor} cancelled their classmate request.`;
+    case 'group_join_request': return `${actor} requested to join your group "${group}".`;
+    case 'group_invitation':
+    case 'group_invite': return `You received a group invitation from ${actor} to join "${group}".`;
+    case 'project_created': return `${actor} created the group "${group}".`;
+    case 'project_updated': return `${actor} updated the details for "${group}".`;
+    case 'join_code_rotated': return `${actor} changed the join code for "${group}".`;
+    case 'member_joined': return `${actor} approved a classmate to join "${group}".`;
+    case 'group_join_response': {
+      const detail = record.detail || '';
+      const accepted = /approved|accept/i.test(detail) && !/not approved|declined|rejected/i.test(detail);
+      return `${actor} ${accepted ? 'approved' : 'declined'} your request to join "${group}".`;
+    }
+    case 'direct_message': return `You received a new message from ${actor}.`;
+    case 'group_message': return `You received a new message from ${actor} in "${group}".`;
+    case 'message_sent': return `${actor} posted a new message in "${group}".`;
+    case 'message_edited': return `${actor} edited a message in "${group}".`;
+    case 'message_deleted': return `${actor} deleted a message in "${group}".`;
+    case 'message_pinned': return `${actor} pinned a message in "${group}".`;
+    case 'message_unpinned': return `${actor} unpinned a message in "${group}".`;
+    case 'milestone_created': return `${actor} added a milestone to "${group}".`;
+    case 'milestone_updated': return `${actor} updated a milestone in "${group}".`;
+    case 'milestone_deleted': return `${actor} deleted a milestone from "${group}".`;
+    case 'assignment_created': return `${actor} added an assignment to "${group}".`;
+    case 'assignment_updated': return `${actor} updated an assignment in "${group}".`;
+    case 'assignment_deleted': return `${actor} deleted an assignment from "${group}".`;
+    case 'comment_added': return `${actor} commented on an assignment in "${group}".`;
+    default: {
+      const detail = (record.detail || '').trim();
+      const cleaned = detail.replace(/^[^:]{1,80}:\s*/, '');
+      return cleaned ? `${actor} ${cleaned.replace(/[.?!]+$/, '')}.` : `${actor} sent you a notification.`;
+    }
+  }
+}
+
 async function loadNotifications() {
   const records = await api('/api/notifications');
   $('#notification-dot').hidden = !records.some((item) => !item.read_at);
   const known=new Set(records.map(record=>String(record.id)));for(const id of selectedNotificationIds)if(!known.has(id))selectedNotificationIds.delete(id);
-  const isMessage=record=>String(record.kind||'').includes('message');const groups=[['all','All',records],['messages','Messages',records.filter(isMessage)],['other','Other',records.filter(record=>!isMessage(record))]];const tabs=$('#notification-tabs');tabs.replaceChildren();groups.forEach(([key,label,items])=>{const button=document.createElement('button');button.type='button';button.className=`notification-tab ${notificationFilter===key?'active':''}`;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(notificationFilter===key));button.textContent=`${label} ${items.length}`;button.addEventListener('click',()=>{notificationFilter=key;loadNotifications();});tabs.append(button);});
-  const visible=groups.find(([key])=>key===notificationFilter)?.[2]||records;const panel = $('#notifications-list'); panel.replaceChildren();
-  if (!visible.length) { panel.textContent = records.length?'No notifications in this tab.':'You’re all caught up.'; syncNotificationSelection(); return; }
-  visible.forEach((record) => { const item = document.createElement('article'); item.className = `notification-item ${record.read_at ? '' : 'unread'}`; const check=document.createElement('input');check.type='checkbox';check.className='notification-check';check.value=record.id;check.checked=selectedNotificationIds.has(String(record.id));check.setAttribute('aria-label',`Select notification from ${record.actor||'StudyPilot'}`);check.addEventListener('change',()=>{if(check.checked)selectedNotificationIds.add(String(record.id));else selectedNotificationIds.delete(String(record.id));syncNotificationSelection(visible.length);});const content=document.createElement('div');content.className='notification-copy'; const text = document.createElement('p');const actor=record.actor||'A teammate';text.textContent=record.kind==='direct_message'?`You received a new message from ${actor}`:record.kind==='group_message'?`New message from ${actor} in ${record.project_name||'your group'}`:`${actor}: ${record.detail||'You have a new notification.'}`; const time = document.createElement('small'); time.textContent = formatTimestamp(record.created_at);content.append(text,time);if(record.kind==='group_join_request'&&record.project_id&&record.project_name){const link=document.createElement('a');link.className='notification-link';link.href=`#/groups/${record.project_id}?requests=1`;link.textContent=`Manage requests · ${record.project_name}`;link.addEventListener('click',()=>patch('/api/notifications',{action:'read',ids:[record.id]}).catch(()=>{}));content.append(link);}const read=document.createElement('button');read.type='button';read.className='text-button notification-read';read.textContent=record.read_at?'Mark unread':'Mark read';read.addEventListener('click',async()=>{await patch('/api/notifications',{action:record.read_at?'unread':'read',ids:[record.id]});await loadNotifications();});item.append(check,content,read); panel.append(item); });
-  syncNotificationSelection(visible.length);
+  const isMessage=record=>String(record.kind||'').includes('message');
+  const groups=[['all','All',records],['messages','Messages',records.filter(isMessage)],['other','Other',records.filter(record=>!isMessage(record))]];
+  const tabs=$('#notification-tabs');tabs.replaceChildren();
+  groups.forEach(([key,label,items])=>{const button=document.createElement('button');button.type='button';button.className=`notification-tab ${notificationFilter===key?'active':''}`;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(notificationFilter===key));button.textContent=`${label} ${items.length}`;button.addEventListener('click',()=>{notificationFilter=key;loadNotifications();});tabs.append(button);});
+  const visible=groups.find(([key])=>key===notificationFilter)?.[2]||records;
+  const panel = $('#notifications-list'); panel.replaceChildren();
+  if (!visible.length) { panel.textContent = records.length?'No notifications in this tab.':'You’re all caught up.'; syncNotificationSelection(visible); return; }
+  visible.forEach((record) => {
+    const item = document.createElement('article'); item.className = `notification-item ${record.read_at ? '' : 'unread'}`;
+    const check=document.createElement('input');check.type='checkbox';check.className='notification-check';check.value=record.id;check.checked=selectedNotificationIds.has(String(record.id));check.setAttribute('aria-label',`Select notification from ${record.actor||'StudyPilot'}`);
+    check.addEventListener('change',()=>{if(check.checked)selectedNotificationIds.add(String(record.id));else selectedNotificationIds.delete(String(record.id));syncNotificationSelection(visible);});
+    const content=document.createElement('div');content.className='notification-copy';
+    const text = document.createElement('p');text.textContent=notificationMessage(record);
+    const time = document.createElement('small');time.className='notification-time';time.textContent=formatTimestamp(record.created_at);content.append(text,time);
+    if(record.kind==='group_join_request'&&record.project_id&&record.project_name){const link=document.createElement('a');link.className='notification-link';link.href=`#/groups/${record.project_id}?requests=1`;link.textContent=`Manage requests · ${record.project_name}`;link.addEventListener('click',()=>patch('/api/notifications',{action:'read',ids:[record.id]}).catch(()=>{}));content.append(link);}
+    const read=document.createElement('button');read.type='button';read.className='text-button notification-read';read.textContent=record.read_at?'Mark unread':'Mark read';read.addEventListener('click',async()=>{await patch('/api/notifications',{action:record.read_at?'unread':'read',ids:[record.id]});await loadNotifications();});
+    item.append(check,content,read);panel.append(item);
+  });
+  syncNotificationSelection(visible);
 }
 
-function syncNotificationSelection(total=$$('.notification-check').length) {
-  const selected=selectedNotificationIds.size;$('#notification-selection-count').textContent=`${selected} selected`;
+function syncNotificationSelection(visibleRecords) {
+  const visible = visibleRecords || [...$$('.notification-check')].map(box=>({id:box.value}));
+  const ids=visible.map(record=>String(record.id));
+  const selected=ids.filter(id=>selectedNotificationIds.has(id)).length;
+  const total=ids.length;
+  $('#notification-selection-count').textContent=`${selected} selected`;
   $('#notification-delete-selected').disabled=!selected;
-  const visibleSelected=$$('.notification-check:checked').length;const all=$('#notification-select-all');all.checked=total>0&&visibleSelected===total;all.indeterminate=visibleSelected>0&&visibleSelected<total;
+  $('#notification-clear-all').disabled=!total;
+  $('#notification-select-all').disabled=!total;
+  const all=$('#notification-select-all');all.checked=total>0&&selected===total;all.indeterminate=selected>0&&selected<total;
 }
 
-$('#notification-select-all').addEventListener('change',event=>{$$('.notification-check').forEach(box=>{box.checked=event.currentTarget.checked;if(box.checked)selectedNotificationIds.add(String(box.value));else selectedNotificationIds.delete(String(box.value));});syncNotificationSelection($$('.notification-check').length);});
-$('#notification-delete-selected').addEventListener('click',async()=>{const ids=[...selectedNotificationIds].map(Number);if(!ids.length)return;if(!await requestConfirmation({title:'Delete selected notifications?',message:`Delete ${ids.length} selected notification${ids.length===1?'':'s'}? This cannot be undone.`,confirmLabel:`Delete ${ids.length}`,danger:true}))return;try{await patch('/api/notifications',{action:'delete',ids});ids.forEach(id=>selectedNotificationIds.delete(String(id)));await loadNotifications();}catch(error){showMessage(error.message);}});
-$('#notification-clear-all').addEventListener('click',async()=>{if(!await requestConfirmation({title:'Clear notifications?',message:'All notifications will be removed.',confirmLabel:'Clear all',danger:true}))return;try{await api('/api/notifications',{method:'DELETE'});await loadNotifications();}catch(error){showMessage(error.message);}});
+$('#notification-select-all').addEventListener('change',event=>{$$('.notification-check').forEach(box=>{box.checked=event.currentTarget.checked;if(box.checked)selectedNotificationIds.add(String(box.value));else selectedNotificationIds.delete(String(box.value));});syncNotificationSelection();});
+$('#notification-delete-selected').addEventListener('click',async()=>{const visibleIds=[...$$('.notification-check')].map(box=>String(box.value));const ids=[...selectedNotificationIds].filter(id=>visibleIds.includes(id)).map(Number);if(!ids.length)return;if(!await requestConfirmation({title:'Delete selected notifications?',message:`Delete ${ids.length} selected notification${ids.length===1?'':'s'}? This cannot be undone.`,confirmLabel:`Delete ${ids.length}`,danger:true}))return;try{await patch('/api/notifications',{action:'delete',ids,scope:notificationFilter});ids.forEach(id=>selectedNotificationIds.delete(String(id)));await loadNotifications();}catch(error){showMessage(error.message);}});
+$('#notification-clear-all').addEventListener('click',async()=>{const ids=[...$$('.notification-check')].map(box=>Number(box.value));const count=ids.length;if(!count)return;const scope=notificationFilter;const label=scope==='all'?'notifications':scope==='messages'?'message notifications':'other notifications';if(!await requestConfirmation({title:'Clear notifications?',message:`Delete all ${count} ${label}? This cannot be undone.`,confirmLabel:`Clear ${count}`,danger:true}))return;try{await patch('/api/notifications',{action:'delete',ids,scope});ids.forEach(id=>selectedNotificationIds.delete(String(id)));await loadNotifications();}catch(error){showMessage(error.message);}});
 
 $('#account-button').addEventListener('click', () => { closeOtherMenus(null);$('#account-menu').hidden = !$('#account-menu').hidden; });
 document.addEventListener('click', (event) => { if (!event.target.closest('.account-area')) $('#account-menu').hidden = true; });
@@ -1185,8 +1247,9 @@ boot();
 
 
 document.addEventListener('pointerdown',event=>{const open=$$('details[open]');open.forEach(menu=>{if(!menu.contains(event.target))menu.open=false;});if(!$('#account-menu').contains(event.target)&&!$('#account-button').contains(event.target))$('#account-menu').hidden=true;});
-document.addEventListener('keydown',event=>{if(event.key==='Escape'){closeOtherMenus(null);$('#account-menu').hidden=true;}});
-document.addEventListener('toggle',event=>{const menu=event.target;if(!(menu instanceof HTMLDetailsElement))return;const conversationPopup=menu.querySelector('.conversation-action-list');if(!menu.open){if(conversationPopup)conversationPopup.removeAttribute('style');return;}closeOtherMenus(menu);$('#account-menu').hidden=true;const popup=menu.querySelector('.message-menu-items,.comment-menu-items,.member-menu-items,.group-menu-items,.task-move-menu,.conversation-action-list');if(!popup)return;if(!popup.classList.contains('conversation-action-list'))enhanceContextMenu(popup);requestAnimationFrame(()=>{menu.classList.remove('opens-up','opens-left');if(popup.classList.contains('conversation-action-list')){const anchor=menu.querySelector('summary').getBoundingClientRect();popup.style.maxHeight=`${Math.max(120,innerHeight-24)}px`;popup.style.overflowY='auto';if(innerWidth<=760){popup.style.position='fixed';popup.style.left=`${Math.max(12,Math.min(anchor.right-popup.offsetWidth,innerWidth-popup.offsetWidth-12))}px`;const top=anchor.bottom+4;popup.style.top=`${top+popup.offsetHeight>innerHeight-8?Math.max(8,anchor.top-popup.offsetHeight-4):top}px`;}else{popup.style.position='absolute';popup.style.left='auto';popup.style.right='0';popup.style.top='calc(100% + 4px)';popup.style.bottom='auto';if(anchor.bottom+popup.offsetHeight>innerHeight-8){popup.style.top='auto';popup.style.bottom='calc(100% + 4px)';menu.classList.add('opens-up');}}return;}const memberList=menu.closest('.member-list');if(memberList){const list=memberList.getBoundingClientRect(),anchor=menu.getBoundingClientRect();popup.style.maxHeight=`${Math.max(80,list.height-8)}px`;popup.style.overflowY='auto';popup.style.bottom='auto';popup.style.top=`${Math.max(list.top+4,Math.min(anchor.bottom+4,list.bottom-popup.offsetHeight-4))-anchor.top}px`;return;}const bounds=popup.getBoundingClientRect();if(bounds.bottom>innerHeight-8)menu.classList.add('opens-up');if(bounds.right>innerWidth-8)menu.classList.add('opens-left');});},true);
+document.addEventListener('keydown',event=>{if(event.key==='Escape'){const opened=$('.conversation-actions-menu[open]');const trigger=opened?.querySelector('summary');closeOtherMenus(null);if(trigger)trigger.focus();$('#account-menu').hidden=true;}});
+document.addEventListener('click',event=>{if(!event.target.closest('.conversation-actions-menu'))closeOtherMenus(null);});
+document.addEventListener('toggle',event=>{const menu=event.target;if(!(menu instanceof HTMLDetailsElement))return;const conversationPopup=menu.querySelector('.conversation-action-list');if(!menu.open){if(conversationPopup)conversationPopup.removeAttribute('style');return;}closeOtherMenus(menu);$('#account-menu').hidden=true;const popup=menu.querySelector('.message-menu-items,.comment-menu-items,.member-menu-items,.group-menu-items,.task-move-menu,.conversation-action-list');if(!popup)return;if(!popup.classList.contains('conversation-action-list'))enhanceContextMenu(popup);requestAnimationFrame(()=>{menu.classList.remove('opens-up','opens-left');if(popup.classList.contains('conversation-action-list')){const anchor=menu.querySelector('summary').getBoundingClientRect();popup.style.position='fixed';popup.style.maxHeight=`${Math.max(120,innerHeight-24)}px`;popup.style.overflowY='auto';popup.style.maxWidth=`calc(100vw - 24px)`;const width=Math.min(popup.offsetWidth,innerWidth-24);const left=Math.max(12,Math.min(anchor.right-width,innerWidth-width-12));popup.style.left=`${left}px`;popup.style.right='auto';const top=anchor.bottom+4;popup.style.top=`${top+popup.offsetHeight>innerHeight-8?Math.max(8,anchor.top-popup.offsetHeight-4):top}px`;popup.style.bottom='auto';return;}const memberList=menu.closest('.member-list');if(memberList){const list=memberList.getBoundingClientRect(),anchor=menu.getBoundingClientRect();popup.style.maxHeight=`${Math.max(80,list.height-8)}px`;popup.style.overflowY='auto';popup.style.bottom='auto';popup.style.top=`${Math.max(list.top+4,Math.min(anchor.bottom+4,list.bottom-popup.offsetHeight-4))-anchor.top}px`;return;}const bounds=popup.getBoundingClientRect();if(bounds.bottom>innerHeight-8)menu.classList.add('opens-up');if(bounds.right>innerWidth-8)menu.classList.add('opens-left');});},true);
 document.addEventListener('focusin',event=>{const open=$$('details[open]');open.forEach(menu=>{if(!menu.contains(event.target))menu.open=false;});if(!$('#account-menu').contains(event.target)&&event.target!==$('#account-button'))$('#account-menu').hidden=true;});
 window.addEventListener('resize',()=>$$('.message-menu[open]').forEach(menu=>positionMessageMenu(menu,menu.closest('.message-row')?.classList.contains('mine'))));
 window.addEventListener('scroll',()=>$$('.message-menu[open]').forEach(menu=>positionMessageMenu(menu,menu.closest('.message-row')?.classList.contains('mine'))),true);
