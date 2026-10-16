@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import db
-from app.schemas import (DirectConversationCreate, FriendRequestCreate, JoinCodeSubmit, Login, MessageCreate, MessageUpdate, NotificationAction, ProjectUpdate, MemberRoleUpdate, OwnershipTransfer,
+from app.schemas import (ConversationStateUpdate, DirectConversationCreate, FriendRequestCreate, JoinCodeSubmit, Login, MessageCreate, MessageUpdate, NotificationAction, ProjectUpdate, MemberRoleUpdate, OwnershipTransfer,
                          MilestoneCreate, MilestoneUpdate, PasswordUpdate, ProfileUpdate,
                          ProjectCreate, Priority, Register, TaskCreate, TaskStatus, TaskUpdate)
 from app.telemetry import configure_telemetry, request_metrics
@@ -464,29 +464,36 @@ def review_group_join_request(project_id: int, request_id: int, action: str, use
 def pinned_messages(project_id: int, user: User):
     with db.connect() as con:
         _membership(con, project_id, user["id"])
-        return [dict(r) for r in con.execute("SELECT m.id,m.body,m.created_at,m.edited_at,m.deleted_at,m.user_id,u.name,u.username,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.pinned_at IS NOT NULL ORDER BY m.pinned_at DESC", (project_id,)).fetchall()]
+        state=con.execute("SELECT cleared_through_id FROM conversation_user_state WHERE user_id=? AND conversation_type='group' AND conversation_id=?",(user["id"],project_id)).fetchone();cutoff=int(state["cleared_through_id"] if state else 0)
+        return [dict(r) for r in con.execute("SELECT m.id,m.body,m.created_at,m.edited_at,m.deleted_at,m.user_id,u.name,u.username,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.id>? AND m.pinned_at IS NOT NULL ORDER BY m.pinned_at DESC", (project_id,cutoff)).fetchall()]
 
 
 @app.get("/api/projects/{project_id}/messages/{message_id}")
 def get_group_message(project_id: int, message_id: int, user: User):
     with db.connect() as con:
         _membership(con, project_id, user["id"])
-        row=con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,u.id user_id,u.name,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.id=?",(project_id,message_id)).fetchone()
+        state=con.execute("SELECT cleared_through_id FROM conversation_user_state WHERE user_id=? AND conversation_type='group' AND conversation_id=?",(user["id"],project_id)).fetchone();cutoff=int(state["cleared_through_id"] if state else 0)
+        row=con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,u.id user_id,u.name,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.id>? AND m.id=?",(project_id,cutoff,message_id)).fetchone()
         if row is None: raise HTTPException(status_code=404, detail="message not found")
         return dict(row)
 
 
 @app.get("/api/group-conversations")
-def group_conversations(user: User):
+def group_conversations(user: User, archived: bool = False):
     with db.connect() as con:
         return [dict(r) for r in con.execute("""SELECT p.id project_id,p.name,p.avatar,p.created_at,
-            (SELECT m.body FROM messages m WHERE m.project_id=p.id ORDER BY id DESC LIMIT 1) last_message,
-            (SELECT u.name FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=p.id ORDER BY m.id DESC LIMIT 1) last_message_sender_name,
-            (SELECT m.user_id FROM messages m WHERE m.project_id=p.id ORDER BY m.id DESC LIMIT 1) last_message_sender_id,
-            (SELECT m.created_at FROM messages m WHERE m.project_id=p.id ORDER BY id DESC LIMIT 1) last_message_at,
-            (SELECT COUNT(*) FROM messages m WHERE m.project_id=p.id AND m.user_id<>? AND m.id>COALESCE((SELECT last_read_message_id FROM group_message_reads r WHERE r.project_id=p.id AND r.user_id=?),0)) unread_count,
-            (SELECT MIN(m.id) FROM messages m WHERE m.project_id=p.id AND m.user_id<>? AND m.id>COALESCE((SELECT last_read_message_id FROM group_message_reads r WHERE r.project_id=p.id AND r.user_id=?),0)) first_unread_message_id
-            FROM projects p JOIN project_members pm ON pm.project_id=p.id WHERE pm.user_id=? ORDER BY COALESCE(last_message_at,p.created_at) DESC""", (user["id"],user["id"],user["id"],user["id"],user["id"])).fetchall()]
+            (SELECT m.body FROM messages m WHERE m.project_id=p.id AND m.id>COALESCE(s.cleared_through_id,0) ORDER BY id DESC LIMIT 1) last_message,
+            (SELECT u.name FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=p.id AND m.id>COALESCE(s.cleared_through_id,0) ORDER BY m.id DESC LIMIT 1) last_message_sender_name,
+            (SELECT m.user_id FROM messages m WHERE m.project_id=p.id AND m.id>COALESCE(s.cleared_through_id,0) ORDER BY m.id DESC LIMIT 1) last_message_sender_id,
+            (SELECT m.created_at FROM messages m WHERE m.project_id=p.id AND m.id>COALESCE(s.cleared_through_id,0) ORDER BY id DESC LIMIT 1) last_message_at,
+            MAX(COALESCE(s.unread_override,0), (SELECT COUNT(*) FROM messages m WHERE m.project_id=p.id AND m.user_id<>? AND m.id>MAX(COALESCE(r.last_read_message_id,0),COALESCE(s.cleared_through_id,0)))) unread_count,
+            (SELECT MIN(m.id) FROM messages m WHERE m.project_id=p.id AND m.user_id<>? AND m.id>MAX(COALESCE(r.last_read_message_id,0),COALESCE(s.cleared_through_id,0))) first_unread_message_id,
+            COALESCE(s.pinned,0) pinned,COALESCE(s.archived,0) archived
+            FROM projects p JOIN project_members pm ON pm.project_id=p.id
+            LEFT JOIN conversation_user_state s ON s.user_id=pm.user_id AND s.conversation_type='group' AND s.conversation_id=p.id
+            LEFT JOIN group_message_reads r ON r.project_id=p.id AND r.user_id=pm.user_id
+            WHERE pm.user_id=? AND COALESCE(s.archived,0)=?
+            ORDER BY COALESCE(s.pinned,0) DESC,COALESCE(last_message_at,p.created_at) DESC""", (user["id"],user["id"],user["id"],int(archived))).fetchall()]
 
 
 @app.get("/api/projects/{project_id}")
@@ -721,13 +728,16 @@ def delete_comment(task_id: int, comment_id: int, user: User):
 def list_messages(project_id: int, user: User, after_id: int = Query(default=0, ge=0), mark_read: bool = Query(default=False)):
     with db.connect() as con:
         _membership(con, project_id, user["id"])
+        state = con.execute("SELECT cleared_through_id FROM conversation_user_state WHERE user_id=? AND conversation_type='group' AND conversation_id=?", (user["id"],project_id)).fetchone()
+        cutoff = int(state["cleared_through_id"] if state else 0)
         if mark_read:
             latest = con.execute("SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=?", (project_id,)).fetchone()[0]
             con.execute("INSERT INTO group_message_reads(project_id,user_id,last_read_message_id) VALUES(?,?,?) ON CONFLICT(project_id,user_id) DO UPDATE SET last_read_message_id=MAX(last_read_message_id,excluded.last_read_message_id)", (project_id,user["id"],latest))
+            con.execute("UPDATE conversation_user_state SET unread_override=0 WHERE user_id=? AND conversation_type='group' AND conversation_id=?", (user["id"],project_id))
         if after_id:
-            rows = con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.id AS user_id,u.name,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id LEFT JOIN messages reply ON reply.id=m.reply_to_id AND reply.project_id=m.project_id WHERE m.project_id=? AND m.id>? ORDER BY m.id LIMIT 100", (project_id, after_id)).fetchall()
+            rows = con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.id AS user_id,u.name,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id LEFT JOIN messages reply ON reply.id=m.reply_to_id AND reply.project_id=m.project_id AND reply.id>? WHERE m.project_id=? AND m.id>? ORDER BY m.id LIMIT 100", (cutoff,project_id, max(after_id,cutoff))).fetchall()
         else:
-            rows = con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.id AS user_id,u.name,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id LEFT JOIN messages reply ON reply.id=m.reply_to_id AND reply.project_id=m.project_id WHERE m.project_id=? ORDER BY m.id DESC LIMIT 100", (project_id,)).fetchall()
+            rows = con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.id AS user_id,u.name,u.avatar,u.profile_photo FROM messages m JOIN users u ON u.id=m.user_id LEFT JOIN messages reply ON reply.id=m.reply_to_id AND reply.project_id=m.project_id AND reply.id>? WHERE m.project_id=? AND m.id>? ORDER BY m.id DESC LIMIT 100", (cutoff,project_id,cutoff)).fetchall()
             rows = list(reversed(rows))
         return [dict(row) for row in rows]
 
@@ -934,26 +944,80 @@ def cancel_friend_request(request_id: int, user: User):
 
 
 @app.get("/api/direct/conversations")
-def list_direct_conversations(user: User):
+def list_direct_conversations(user: User, archived: bool = False):
     with db.connect() as con:
         rows = con.execute("""SELECT c.id,c.created_at,
             CASE WHEN c.user_a=? THEN b.id ELSE a.id END AS person_id,
             CASE WHEN c.user_a=? THEN b.name ELSE a.name END AS person_name,
+            COALESCE(NULLIF(s.nickname,''),CASE WHEN c.user_a=? THEN b.name ELSE a.name END) AS display_name,
             CASE WHEN c.user_a=? THEN b.avatar ELSE a.avatar END AS person_avatar,
             CASE WHEN c.user_a=? THEN b.profile_photo ELSE a.profile_photo END AS person_profile_photo,
-            (SELECT body FROM direct_messages WHERE conversation_id=c.id ORDER BY id DESC LIMIT 1) AS last_message,
-            (SELECT sender_id FROM direct_messages WHERE conversation_id=c.id ORDER BY id DESC LIMIT 1) AS last_message_sender_id,
-            (SELECT created_at FROM direct_messages WHERE conversation_id=c.id ORDER BY id DESC LIMIT 1) AS last_message_at,
-            (SELECT COUNT(*) FROM direct_messages dm WHERE dm.conversation_id=c.id AND dm.sender_id<>? AND dm.read_at IS NULL) AS unread_count,
-            (SELECT MIN(dm.id) FROM direct_messages dm WHERE dm.conversation_id=c.id AND dm.sender_id<>? AND dm.read_at IS NULL) AS first_unread_message_id
+            (SELECT body FROM direct_messages WHERE conversation_id=c.id AND id>COALESCE(s.cleared_through_id,0) ORDER BY id DESC LIMIT 1) AS last_message,
+            (SELECT sender_id FROM direct_messages WHERE conversation_id=c.id AND id>COALESCE(s.cleared_through_id,0) ORDER BY id DESC LIMIT 1) AS last_message_sender_id,
+            (SELECT created_at FROM direct_messages WHERE conversation_id=c.id AND id>COALESCE(s.cleared_through_id,0) ORDER BY id DESC LIMIT 1) AS last_message_at,
+            MAX(COALESCE(s.unread_override,0),(SELECT COUNT(*) FROM direct_messages dm WHERE dm.conversation_id=c.id AND dm.id>COALESCE(s.cleared_through_id,0) AND dm.sender_id<>? AND dm.read_at IS NULL)) AS unread_count,
+            (SELECT MIN(dm.id) FROM direct_messages dm WHERE dm.conversation_id=c.id AND dm.id>COALESCE(s.cleared_through_id,0) AND dm.sender_id<>? AND dm.read_at IS NULL) AS first_unread_message_id,
+            COALESCE(s.pinned,0) pinned,COALESCE(s.archived,0) archived,COALESCE(s.cleared_through_id,0) cleared_through_id
             FROM direct_conversations c JOIN users a ON a.id=c.user_a JOIN users b ON b.id=c.user_b
+            LEFT JOIN conversation_user_state s ON s.user_id=? AND s.conversation_type='direct' AND s.conversation_id=c.id
             WHERE (c.user_a=? OR c.user_b=?)
+            AND COALESCE(s.archived,0)=?
             AND NOT EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='blocked' AND ((f.requester_id=c.user_a AND f.recipient_id=c.user_b) OR (f.requester_id=c.user_b AND f.recipient_id=c.user_a)))
             AND (EXISTS(SELECT 1 FROM project_members mine JOIN project_members theirs ON mine.project_id=theirs.project_id WHERE mine.user_id=? AND theirs.user_id=CASE WHEN c.user_a=? THEN c.user_b ELSE c.user_a END)
               OR EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='accepted' AND ((f.requester_id=c.user_a AND f.recipient_id=c.user_b) OR (f.requester_id=c.user_b AND f.recipient_id=c.user_a))))
-            ORDER BY COALESCE(last_message_at,c.created_at) DESC""",
-            (user["id"], user["id"], user["id"], user["id"], user["id"], user["id"], user["id"], user["id"], user["id"], user["id"])).fetchall()
+            ORDER BY COALESCE(s.pinned,0) DESC,COALESCE(last_message_at,c.created_at) DESC""",
+            (user["id"], user["id"], user["id"], user["id"], user["id"], user["id"], user["id"], user["id"], user["id"], user["id"], int(archived), user["id"], user["id"])).fetchall()
         return [dict(row) for row in rows]
+
+
+@app.patch("/api/{conversation_type}-conversations/{conversation_id}/state")
+def update_conversation_state(conversation_type: str, conversation_id: int, body: ConversationStateUpdate, user: User):
+    if conversation_type not in {"direct", "group"}:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    with db.connect() as con:
+        if conversation_type == "direct":
+            _direct_conversation(con, conversation_id, user["id"])
+        else:
+            _membership(con, conversation_id, user["id"])
+        if body.action == "nickname":
+            if conversation_type != "direct":
+                raise HTTPException(status_code=400, detail="group names cannot be changed privately")
+            nickname = (body.nickname or "").strip()
+            if len(nickname) > 40:
+                raise HTTPException(status_code=422, detail="nickname cannot exceed 40 characters")
+            con.execute("INSERT INTO conversation_user_state(user_id,conversation_type,conversation_id,nickname) VALUES(?,'direct',?,?) ON CONFLICT(user_id,conversation_type,conversation_id) DO UPDATE SET nickname=excluded.nickname", (user["id"],conversation_id,nickname or None))
+        else:
+            con.execute("INSERT OR IGNORE INTO conversation_user_state(user_id,conversation_type,conversation_id) VALUES(?,?,?)", (user["id"],conversation_type,conversation_id))
+            if body.action in {"pin","unpin"}:
+                con.execute("UPDATE conversation_user_state SET pinned=? WHERE user_id=? AND conversation_type=? AND conversation_id=?", (int(body.action=="pin"),user["id"],conversation_type,conversation_id))
+            elif body.action in {"archive","unarchive"}:
+                con.execute("UPDATE conversation_user_state SET archived=? WHERE user_id=? AND conversation_type=? AND conversation_id=?", (int(body.action=="archive"),user["id"],conversation_type,conversation_id))
+            elif body.action == "clear":
+                message_table, owner_column = (("direct_messages","conversation_id") if conversation_type=="direct" else ("messages","project_id"))
+                latest = con.execute(f"SELECT COALESCE(MAX(id),0) FROM {message_table} WHERE {owner_column}=?", (conversation_id,)).fetchone()[0]
+                con.execute("UPDATE conversation_user_state SET cleared_through_id=?,unread_override=0 WHERE user_id=? AND conversation_type=? AND conversation_id=?", (latest,user["id"],conversation_type,conversation_id))
+                if conversation_type == "direct":
+                    con.execute("UPDATE direct_messages SET read_at=COALESCE(read_at,strftime('%Y-%m-%dT%H:%M:%SZ','now')) WHERE conversation_id=? AND sender_id<>?", (conversation_id,user["id"]))
+                else:
+                    con.execute("INSERT INTO group_message_reads(project_id,user_id,last_read_message_id) VALUES(?,?,?) ON CONFLICT(project_id,user_id) DO UPDATE SET last_read_message_id=MAX(last_read_message_id,excluded.last_read_message_id)", (conversation_id,user["id"],latest))
+            elif body.action in {"read","unread"}:
+                is_unread = body.action == "unread"
+                con.execute("UPDATE conversation_user_state SET unread_override=? WHERE user_id=? AND conversation_type=? AND conversation_id=?", (int(is_unread),user["id"],conversation_type,conversation_id))
+                if conversation_type == "direct":
+                    if is_unread:
+                        con.execute("UPDATE direct_messages SET read_at=NULL WHERE conversation_id=? AND sender_id<>?", (conversation_id,user["id"]))
+                    else:
+                        con.execute("UPDATE direct_messages SET read_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE conversation_id=? AND sender_id<>? AND read_at IS NULL", (conversation_id,user["id"]))
+                else:
+                    if is_unread:
+                        cutoff = con.execute("SELECT cleared_through_id FROM conversation_user_state WHERE user_id=? AND conversation_type='group' AND conversation_id=?", (user["id"],conversation_id)).fetchone()[0]
+                        first = con.execute("SELECT MIN(id) FROM messages WHERE project_id=? AND id>? AND user_id<>?", (conversation_id,cutoff,user["id"])).fetchone()[0]
+                        latest = con.execute("SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=?", (conversation_id,)).fetchone()[0]
+                        through = max(0,(first or latest)-1)
+                    else:
+                        through = con.execute("SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=?", (conversation_id,)).fetchone()[0]
+                    con.execute("INSERT INTO group_message_reads(project_id,user_id,last_read_message_id) VALUES(?,?,?) ON CONFLICT(project_id,user_id) DO UPDATE SET last_read_message_id=excluded.last_read_message_id", (conversation_id,user["id"],through))
+        return {"ok": True}
 
 
 @app.post("/api/direct/conversations", status_code=201)
@@ -980,14 +1044,17 @@ def start_direct_conversation(body: DirectConversationCreate, user: User):
 def list_direct_messages(conversation_id: int, user: User, after_id: int = Query(default=0, ge=0), mark_read: bool = Query(default=False)):
     with db.connect() as con:
         _direct_conversation(con, conversation_id, user["id"])
+        state = con.execute("SELECT cleared_through_id FROM conversation_user_state WHERE user_id=? AND conversation_type='direct' AND conversation_id=?", (user["id"],conversation_id)).fetchone()
+        cutoff = int(state["cleared_through_id"] if state else 0)
         if mark_read:
             con.execute("UPDATE direct_messages SET read_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE conversation_id=? AND sender_id<>? AND read_at IS NULL", (conversation_id, user["id"]))
+            con.execute("UPDATE conversation_user_state SET unread_override=0 WHERE user_id=? AND conversation_type='direct' AND conversation_id=?", (user["id"],conversation_id))
         if after_id:
             rows=con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,dm.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.name AS sender_name,u.avatar,u.profile_photo
-                FROM direct_messages dm JOIN users u ON u.id=dm.sender_id LEFT JOIN direct_messages reply ON reply.id=dm.reply_to_id AND reply.conversation_id=dm.conversation_id WHERE dm.conversation_id=? AND dm.id>? ORDER BY dm.id LIMIT 100""",(conversation_id,after_id)).fetchall()
+                FROM direct_messages dm JOIN users u ON u.id=dm.sender_id LEFT JOIN direct_messages reply ON reply.id=dm.reply_to_id AND reply.conversation_id=dm.conversation_id AND reply.id>? WHERE dm.conversation_id=? AND dm.id>? ORDER BY dm.id LIMIT 100""",(cutoff,conversation_id,max(after_id,cutoff))).fetchall()
         else:
             rows=con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,dm.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.name AS sender_name,u.avatar,u.profile_photo
-                FROM direct_messages dm JOIN users u ON u.id=dm.sender_id LEFT JOIN direct_messages reply ON reply.id=dm.reply_to_id AND reply.conversation_id=dm.conversation_id WHERE dm.conversation_id=? ORDER BY dm.id DESC LIMIT 100""",(conversation_id,)).fetchall()
+                FROM direct_messages dm JOIN users u ON u.id=dm.sender_id LEFT JOIN direct_messages reply ON reply.id=dm.reply_to_id AND reply.conversation_id=dm.conversation_id AND reply.id>? WHERE dm.conversation_id=? AND dm.id>? ORDER BY dm.id DESC LIMIT 100""",(cutoff,conversation_id,cutoff)).fetchall()
             rows=list(reversed(rows))
         return [dict(row) for row in rows]
 
@@ -1039,16 +1106,18 @@ def delete_direct_message(conversation_id: int, message_id: int, user: User):
 def pinned_direct_messages(conversation_id: int, user: User):
     with db.connect() as con:
         _direct_conversation(con, conversation_id, user["id"])
+        state=con.execute("SELECT cleared_through_id FROM conversation_user_state WHERE user_id=? AND conversation_type='direct' AND conversation_id=?",(user["id"],conversation_id)).fetchone();cutoff=int(state["cleared_through_id"] if state else 0)
         return [dict(row) for row in con.execute("""SELECT dm.id,dm.conversation_id,dm.body,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.sender_id,u.name AS sender_name,u.avatar
-            FROM direct_messages dm JOIN users u ON u.id=dm.sender_id WHERE dm.conversation_id=? AND dm.pinned_at IS NOT NULL ORDER BY dm.pinned_at DESC""", (conversation_id,)).fetchall()]
+            FROM direct_messages dm JOIN users u ON u.id=dm.sender_id WHERE dm.conversation_id=? AND dm.id>? AND dm.pinned_at IS NOT NULL ORDER BY dm.pinned_at DESC""", (conversation_id,cutoff)).fetchall()]
 
 
 @app.get("/api/direct/conversations/{conversation_id}/messages/{message_id}")
 def get_direct_message(conversation_id: int, message_id: int, user: User):
     with db.connect() as con:
         _direct_conversation(con, conversation_id, user["id"])
+        state=con.execute("SELECT cleared_through_id FROM conversation_user_state WHERE user_id=? AND conversation_type='direct' AND conversation_id=?",(user["id"],conversation_id)).fetchone();cutoff=int(state["cleared_through_id"] if state else 0)
         row = con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,dm.reply_to_id,u.name AS sender_name,u.avatar
-            FROM direct_messages dm JOIN users u ON u.id=dm.sender_id WHERE dm.conversation_id=? AND dm.id=?""", (conversation_id, message_id)).fetchone()
+            FROM direct_messages dm JOIN users u ON u.id=dm.sender_id WHERE dm.conversation_id=? AND dm.id>? AND dm.id=?""", (conversation_id,cutoff,message_id)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="message not found")
         return dict(row)

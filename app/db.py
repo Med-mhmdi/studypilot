@@ -250,6 +250,20 @@ def initialize() -> None:
         con.execute("CREATE INDEX IF NOT EXISTS idx_messages_project ON messages(project_id,id)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_milestones_project ON milestones(project_id,due_date)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_direct_messages_conversation ON direct_messages(conversation_id,id)")
+        # Per-account conversation controls. Message rows remain shared; this table
+        # stores only each member's view and never deletes conversation history.
+        con.execute("""CREATE TABLE IF NOT EXISTS conversation_user_state (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            conversation_type TEXT NOT NULL CHECK(conversation_type IN ('direct','group')),
+            conversation_id INTEGER NOT NULL,
+            pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)),
+            archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)),
+            unread_override INTEGER NOT NULL DEFAULT 0 CHECK(unread_override IN (0,1)),
+            cleared_through_id INTEGER NOT NULL DEFAULT 0,
+            nickname TEXT,
+            PRIMARY KEY(user_id,conversation_type,conversation_id)
+        )""")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_conversation_user_state_list ON conversation_user_state(user_id,conversation_type,archived,pinned)")
         con.execute("""CREATE TABLE IF NOT EXISTS friend_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             requester_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

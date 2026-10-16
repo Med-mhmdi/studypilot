@@ -97,6 +97,43 @@ a.secondary-button {
 .notification-tab { flex:1; min-height:36px; border:1px solid transparent; border-radius:9px; background:transparent; color:var(--muted); font:600 11px system-ui,sans-serif; cursor:pointer; }
 .notification-tab.active { color:var(--brand); background:color-mix(in srgb,var(--brand) 10%,var(--surface)); border-color:color-mix(in srgb,var(--brand) 22%,var(--line)); }
 .notifications-panel { width:min(700px,calc(100vw - 24px)); max-height:calc(100dvh - 32px); overflow:auto; }
+#notifications-dialog { width:min(700px,calc(100vw - 24px)); max-width:calc(100vw - 24px); min-width:0; padding:0; overflow-x:hidden; }
+#notifications-dialog > .notifications-panel { width:100%; min-width:0; max-width:100%; padding:clamp(16px,3vw,24px); }
+#notifications-dialog .dialog-head,#notifications-dialog .notification-tabs,#notifications-dialog .notification-toolbar,#notifications-dialog .notifications-list { min-width:0; }
+#notifications-dialog .notification-tabs { justify-content:stretch; }
+#notifications-dialog .notification-toolbar { column-gap:8px; }
+#notifications-dialog .notifications-list { width:100%; }
+#rename-conversation-dialog { width:min(440px,calc(100vw - 24px)); max-width:calc(100vw - 24px); padding:0; }
+.rename-conversation-panel { min-width:0; padding:22px; }
+.rename-conversation-panel .field { min-width:0; }
+.rename-conversation-panel .field input { width:100%; min-width:0; }
+.archived-toggle { align-self:flex-start; margin:0 0 7px 4px; }
+.conversation-row { display:flex; align-items:center; gap:4px; min-width:0; }
+.conversation-row .conversation-item { flex:1 1 auto; min-width:0; }
+.conversation-actions-menu { position:relative; flex:0 0 auto; }
+.conversation-actions-menu > summary { display:grid; place-items:center; width:34px; height:34px; border:1px solid transparent; border-radius:9px; background:transparent; color:var(--muted); list-style:none; cursor:pointer; }
+.conversation-actions-menu > summary::-webkit-details-marker { display:none; }
+.conversation-actions-menu > summary::after { content:"···"; margin-top:-9px; font-size:21px; letter-spacing:1px; }
+.conversation-actions-menu:hover > summary,.conversation-actions-menu[open] > summary,.conversation-actions-menu > summary:focus-visible { border-color:var(--line); background:var(--surface); color:var(--brand); }
+.conversation-actions-menu:not(:hover):not([open]) > summary:not(:focus-visible) { opacity:.58; }
+.conversation-action-list { position:absolute; z-index:40; top:calc(100% + 4px); right:0; display:grid; min-width:205px; padding:5px; border:1px solid var(--line); border-radius:11px; background:var(--surface); box-shadow:0 14px 32px #17182b28; }
+.conversation-action-list button { display:flex; align-items:center; gap:9px; width:100%; min-height:36px; padding:8px 10px; border:0; border-radius:7px; background:transparent; color:var(--ink); font-size:11px; text-align:left; cursor:pointer; }
+.conversation-action-list button:hover,.conversation-action-list button:focus-visible { background:var(--surface-soft); }
+.conversation-action-list svg { flex:0 0 15px; width:15px; height:15px; stroke:currentColor; stroke-width:1.8; fill:none; }
+.conversation-action-list .menu-danger { color:#bf4650; }
+.conversation-row.is-archived .conversation-item { opacity:.8; }
+[data-theme="dark"] .conversation-action-list,[data-theme="dark"] .conversation-actions-menu:hover > summary,[data-theme="dark"] .conversation-actions-menu[open] > summary { background:#292b39; border-color:#444657; color:#eff0f7; }
+[data-theme="dark"] .conversation-action-list button { color:#eff0f7; }
+@media(max-width:650px) {
+  #notifications-dialog { width:calc(100vw - 20px); max-width:calc(100vw - 20px); max-height:calc(100dvh - 20px); }
+  #notifications-dialog > .notifications-panel { padding:16px 14px; }
+  #notifications-dialog .notification-toolbar { align-items:center; }
+  #notifications-dialog .notification-toolbar label { flex:1 1 100%; }
+  #notifications-dialog .notification-toolbar #notification-selection-count { margin-right:auto; }
+  #notifications-dialog .notification-toolbar button { flex:1 1 auto; }
+  .conversation-actions-menu > summary { width:38px; height:38px; opacity:1!important; }
+  .conversation-action-list { position:fixed; top:auto; right:12px; bottom:auto; max-width:calc(100vw - 24px); }
+}
 .notification-item { grid-template-columns:20px minmax(0,1fr) auto; gap:12px; }
 .notification-item input[type=checkbox] { justify-self:center; margin:0; }
 .notification-copy { min-width:0; }

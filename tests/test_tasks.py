@@ -346,6 +346,69 @@ def test_direct_message_pins_are_private_and_jumpable_data(tmp_path, monkeypatch
             assert stranger.post(f"/api/direct/conversations/{conversation['id']}/messages/{message['id']}/pin").status_code == 404
 
 
+def test_conversation_controls_are_private_and_preserve_shared_messages(tmp_path, monkeypatch):
+    with client_for(tmp_path / "conversation-controls.db", monkeypatch) as alice:
+        register(alice, "alice-controls@example.edu", "Alice")
+        with TestClient(app) as bob, TestClient(app) as stranger:
+            register(bob, "bob-controls@example.edu", "Bob")
+            register(stranger, "stranger-controls@example.edu", "Stranger")
+            project = alice.post("/api/projects", json={"name": "Study circle"}).json()
+            join_group(alice, bob, project)
+            group_id = project["id"]
+            direct = alice.post("/api/direct/conversations", json={"recipient_id": 2}).json()
+            direct_id = direct["id"]
+
+            older = alice.post(f"/api/direct/conversations/{direct_id}/messages", json={"body": "Shared history"}).json()
+            bob.post(f"/api/direct/conversations/{direct_id}/messages", json={"body": "A reply"})
+            assert alice.post(f"/api/direct/conversations/{direct_id}/messages/{older['id']}/pin").status_code == 200
+            group_old = bob.post(f"/api/projects/{group_id}/messages", json={"body": "Group history"}).json()
+
+            # Names and state belong to the signed-in participant only.
+            assert alice.patch(f"/api/direct-conversations/{direct_id}/state", json={"action": "nickname", "nickname": "Bro Med"}).status_code == 200
+            assert alice.get("/api/direct/conversations").json()[0]["display_name"] == "Bro Med"
+            assert bob.get("/api/direct/conversations").json()[0]["display_name"] == "Alice"
+            assert alice.patch(f"/api/direct-conversations/{direct_id}/state", json={"action": "nickname", "nickname": "  "}).status_code == 200
+            assert alice.get("/api/direct/conversations").json()[0]["display_name"] == "Bob"
+            assert alice.patch(f"/api/group-conversations/{group_id}/state", json={"action": "nickname", "nickname": "Private group name"}).status_code == 400
+            assert stranger.patch(f"/api/direct-conversations/{direct_id}/state", json={"action": "pin"}).status_code == 404
+            assert stranger.patch(f"/api/group-conversations/{group_id}/state", json={"action": "archive"}).status_code == 404
+
+            # Pin/unread/archive are per-user and an archived chat can be restored.
+            assert alice.patch(f"/api/direct-conversations/{direct_id}/state", json={"action": "pin"}).status_code == 200
+            assert alice.get("/api/direct/conversations").json()[0]["pinned"] == 1
+            bob_unread_before = bob.get("/api/direct/conversations").json()[0]["unread_count"]
+            assert alice.patch(f"/api/direct-conversations/{direct_id}/state", json={"action": "unread"}).status_code == 200
+            assert alice.get("/api/direct/conversations").json()[0]["unread_count"] >= 1
+            assert bob.get("/api/direct/conversations").json()[0]["unread_count"] == bob_unread_before
+            assert alice.patch(f"/api/direct-conversations/{direct_id}/state", json={"action": "read"}).status_code == 200
+            assert alice.get("/api/direct/conversations").json()[0]["unread_count"] == 0
+            assert alice.patch(f"/api/direct-conversations/{direct_id}/state", json={"action": "unread"}).status_code == 200
+            assert alice.patch(f"/api/direct-conversations/{direct_id}/state", json={"action": "archive"}).status_code == 200
+            assert alice.get("/api/direct/conversations").json() == []
+            assert alice.get("/api/direct/conversations?archived=true").json()[0]["archived"] == 1
+            assert alice.patch(f"/api/direct-conversations/{direct_id}/state", json={"action": "unarchive"}).status_code == 200
+
+            # Clearing advances only Alice's cutoff. Bob keeps all history; new incoming messages remain visible to Alice.
+            assert alice.patch(f"/api/direct-conversations/{direct_id}/state", json={"action": "clear"}).status_code == 200
+            assert alice.get(f"/api/direct/conversations/{direct_id}/messages").json() == []
+            assert alice.get(f"/api/direct/conversations/{direct_id}/messages/{older['id']}").status_code == 404
+            assert alice.get(f"/api/direct/conversations/{direct_id}/pinned-messages").json() == []
+            assert bob.get(f"/api/direct/conversations/{direct_id}/messages").json()[0]["id"] == older["id"]
+            assert bob.get(f"/api/direct/conversations/{direct_id}/messages/{older['id']}").status_code == 200
+            bob.post(f"/api/direct/conversations/{direct_id}/messages", json={"body": "After clear", "reply_to_id": older["id"]})
+            alice_after_clear = alice.get(f"/api/direct/conversations/{direct_id}/messages").json()
+            assert [message["body"] for message in alice_after_clear] == ["After clear"]
+            assert alice_after_clear[0]["reply_body"] is None
+            assert [message["body"] for message in bob.get(f"/api/direct/conversations/{direct_id}/messages").json()] == ["Shared history", "A reply", "After clear"]
+
+            assert alice.patch(f"/api/group-conversations/{group_id}/state", json={"action": "clear"}).status_code == 200
+            assert alice.get(f"/api/projects/{group_id}/messages").json() == []
+            assert alice.get(f"/api/projects/{group_id}/messages/{group_old['id']}").status_code == 404
+            assert bob.get(f"/api/projects/{group_id}/messages").json()[0]["id"] == group_old["id"]
+            bob.post(f"/api/projects/{group_id}/messages", json={"body": "Group after clear"})
+            assert [message["body"] for message in alice.get(f"/api/projects/{group_id}/messages").json()] == ["Group after clear"]
+
+
 def test_message_replies_group_avatar_and_unread_counts(tmp_path, monkeypatch):
     with client_for(tmp_path / "messages-v2.db", monkeypatch) as owner:
         register(owner, "owner@example.edu", "Owner")

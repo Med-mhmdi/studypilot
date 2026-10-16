@@ -79,6 +79,11 @@ class DirectConversationCreate(RequestModel):
     recipient_id: int = Field(gt=0)
 
 
+class ConversationStateUpdate(RequestModel):
+    action: str = Field(pattern=r"^(pin|unpin|read|unread|archive|unarchive|clear|nickname)$")
+    nickname: str | None = Field(default=None, max_length=40)
+
+
 class MilestoneCreate(RequestModel):
     title: str = Field(min_length=1, max_length=40)
     due_date: date | None = None

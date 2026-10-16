@@ -104,13 +104,13 @@ def test_messages_browser_group_direct_reply_unread_and_responsive(tmp_path, mon
             expect(composer.locator("xpath=following-sibling::*[contains(@class,'character-counter')]")).to_have_text("0/2000")
             bubble = page.locator(".message-bubble").last
             assert page.evaluate("el => el.scrollHeight <= el.clientHeight + 1", bubble.element_handle())
-            assert page.evaluate("el => { const r=document.createRange();r.selectNodeContents(el);return r.getClientRects().length===1; }", bubble.element_handle())
+            assert page.evaluate("el => { const r=document.createRange();r.selectNodeContents(el);return r.getBoundingClientRect().height<=parseFloat(getComputedStyle(el).lineHeight)+1; }", bubble.element_handle())
             for short_text in ("wassup", "are you ok"):
                 composer.fill(short_text)
                 page.get_by_role("button", name="Send").click()
                 short_bubble = page.locator(".message-bubble").last
                 expect(short_bubble).to_have_text(short_text)
-                assert page.evaluate("el => { const r=document.createRange();r.selectNodeContents(el);return r.getClientRects().length===1; }", short_bubble.element_handle())
+                assert page.evaluate("el => { const r=document.createRange();r.selectNodeContents(el);return r.getBoundingClientRect().height<=parseFloat(getComputedStyle(el).lineHeight)+1; }", short_bubble.element_handle())
             composer.fill("x" * 1600)
             page.get_by_role("button", name="Send").click()
             long_bubble = page.locator(".message-bubble").last
@@ -250,7 +250,7 @@ def test_messages_browser_group_direct_reply_unread_and_responsive(tmp_path, mon
             expect(page.locator(".new-messages-divider")).to_be_visible()
             for short_text in ("Direct hello", "Unread direct batch two"):
                 short_bubble = page.locator("#direct-stream .message-bubble").filter(has_text=short_text).last
-                assert page.evaluate("el => { const r=document.createRange();r.selectNodeContents(el);return r.getClientRects().length===1; }", short_bubble.element_handle())
+                assert page.evaluate("el => { const r=document.createRange();r.selectNodeContents(el);return r.getBoundingClientRect().height<=parseFloat(getComputedStyle(el).lineHeight)+1; }", short_bubble.element_handle())
             page.get_by_role("textbox", name="Private message").fill("Typing dismisses divider")
             expect(page.locator(".new-messages-divider")).to_have_count(0)
 
@@ -275,6 +275,124 @@ def test_messages_browser_group_direct_reply_unread_and_responsive(tmp_path, mon
                 page.evaluate("([theme]) => document.documentElement.dataset.theme = theme", [theme])
                 page.screenshot(path=str(screenshot_dir / f"messages-{width}-{theme}.png"), full_page=True)
             assert direct["id"]
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+def test_conversation_controls_and_notification_layout_browser(tmp_path, monkeypatch):
+    import uvicorn
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "controls-browser.db"))
+    monkeypatch.setenv("SESSION_SECRET", "browser-test-signing-key-not-for-hosting")
+    monkeypatch.setenv("COOKIE_SECURE", "false")
+    port = _free_port()
+    base_url = f"http://127.0.0.1:{port}"
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    browser = None
+    try:
+        _wait_for_server(server, base_url)
+        with sync_playwright() as automation:
+            launch_options = {}
+            installed_chrome = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+            if installed_chrome.exists():
+                launch_options["executable_path"] = str(installed_chrome)
+            browser = automation.chromium.launch(**launch_options)
+            owner = browser.new_context(viewport={"width": 1280, "height": 900})
+            mate = browser.new_context(viewport={"width": 1280, "height": 900})
+            _ok(owner.request.post(f"{base_url}/api/auth/register", data={"email": "owner-controls@example.edu", "username": "ownercontrols", "name": "Owner", "password": "study-together-123"}))
+            _ok(mate.request.post(f"{base_url}/api/auth/register", data={"email": "mate-controls@example.edu", "username": "matecontrols", "name": "Mate with a deliberately long display name for wrapping coverage", "password": "study-together-123"}))
+            project = owner.request.post(f"{base_url}/api/projects", data={"name": "Leaf crew", "description": "", "avatar": "mint"}).json()
+            code = owner.request.get(f"{base_url}/api/projects/{project['id']}").json()["join_code"]
+            _ok(mate.request.post(f"{base_url}/api/projects/join-requests", data={"code": code}))
+            pending = owner.request.get(f"{base_url}/api/projects/{project['id']}/join-requests").json()[0]
+            _ok(owner.request.post(f"{base_url}/api/projects/{project['id']}/join-requests/{pending['id']}/approve"))
+            direct = owner.request.post(f"{base_url}/api/direct/conversations", data={"recipient_id": 2}).json()
+            _ok(mate.request.post(f"{base_url}/api/direct/conversations/{direct['id']}/messages", data={"body": "Visible before clear"}))
+            for index in range(4):
+                _ok(mate.request.post(f"{base_url}/api/direct/conversations/{direct['id']}/messages", data={"body": f"Notification {index}"}))
+            owner.request.post(f"{base_url}/api/projects", data={"name": "Quiet study group", "description": "", "avatar": "ocean"})
+
+            page = owner.new_page()
+            mate_page = mate.new_page()
+            page.goto(f"{base_url}/#/messages")
+            page.locator("#conversation-tab-groups").click()
+            expect(page.locator(".conversation-row")).to_have_count(2)
+            page.locator('summary[aria-label="Conversation actions for Quiet study group"]').click()
+            page.locator(".conversation-action-list").get_by_role("button", name="Pin conversation").click()
+            expect(page.locator(".conversation-row").first).to_contain_text("Quiet study group")
+            page.locator("#conversation-tab-direct").click()
+            page.locator('summary[aria-label="Conversation actions for Mate with a deliberately long display name for wrapping coverage"]').click()
+            page.locator(".conversation-action-list").get_by_role("button", name="Rename chat").click()
+            expect(page.locator("#rename-conversation-dialog")).to_be_visible()
+            page.locator("#conversation-nickname").fill("Bro Med")
+            page.locator("#rename-conversation-form").get_by_role("button", name="Save nickname").click()
+            expect(page.locator(".conversation-item strong")).to_have_text("Bro Med")
+            page.locator('summary[aria-label="Conversation actions for Bro Med"]').click()
+            page.locator(".conversation-action-list").get_by_role("button", name="Mark as read").click()
+            expect(page.locator(".conversation-item .unread-pill")).to_have_count(0)
+            page.locator('summary[aria-label="Conversation actions for Bro Med"]').click()
+            page.locator(".conversation-action-list").get_by_role("button", name="Mark as unread").click()
+            expect(page.locator(".conversation-item .unread-pill")).to_be_visible()
+            mate_page.goto(f"{base_url}/#/messages")
+            mate_page.locator("#conversation-tab-direct").click()
+            expect(mate_page.locator(".conversation-item strong")).to_have_text("Owner")
+
+            for theme in ("light", "dark"):
+                _ok(owner.request.patch(f"{base_url}/api/profile", data={"name": "Owner", "theme": theme}))
+                page.reload()
+                for width in (1280, 1600, 390):
+                    page.set_viewport_size({"width": width, "height": 900})
+                    page.locator("#notification-button").click()
+                    dialog = page.locator("#notifications-dialog")
+                    expect(dialog).to_be_visible()
+                    expect(dialog.get_by_role("heading", name="Notifications")).to_be_visible()
+                    for label in ("All", "Messages", "Other"):
+                        expect(dialog.get_by_role("tab", name=label, exact=False)).to_be_visible()
+                    expect(dialog.locator("#notification-select-all")).to_be_visible()
+                    expect(dialog.locator("#notification-delete-selected")).to_be_visible()
+                    expect(dialog.locator("#notification-clear-all")).to_be_visible()
+                    expect(dialog.locator(".notification-check").first).to_be_visible()
+                    bounds = dialog.evaluate("d => {const r=d.getBoundingClientRect(),p=d.querySelector('.notifications-panel').getBoundingClientRect();return {left:r.left,right:r.right,pLeft:p.left,pRight:p.right,viewport:innerWidth};}")
+                    assert bounds["left"] >= 0 and bounds["right"] <= bounds["viewport"]
+                    assert bounds["pLeft"] >= bounds["left"] and bounds["pRight"] <= bounds["right"]
+                    assert abs((bounds["left"] + bounds["right"]) / 2 - width / 2) <= 2
+                    page.screenshot(path=str(tmp_path / f"notifications-{width}-{theme}.png"))
+                    dialog.get_by_role("button", name="Close").click()
+
+            page.set_viewport_size({"width": 1280, "height": 900})
+            page.locator("#conversation-tab-direct").click()
+            page.set_viewport_size({"width": 390, "height": 844})
+            mobile_menu=page.locator('summary[aria-label="Conversation actions for Bro Med"]')
+            mobile_menu.focus()
+            page.keyboard.press("Enter")
+            expect(page.locator(".conversation-action-list")).to_be_visible()
+            page.keyboard.press("Escape")
+            expect(page.locator(".conversation-actions-menu[open]")).to_have_count(0)
+            page.set_viewport_size({"width": 1280, "height": 900})
+            page.locator(".conversation-item").click()
+            expect(page.locator(".thread-header h2")).to_have_text("Bro Med")
+            page.locator('summary[aria-label="Conversation actions for Bro Med"]').click()
+            page.locator(".conversation-action-list").get_by_role("button", name="Clear chat for me").click()
+            page.locator("#action-confirm-dialog").get_by_role("button", name="Clear chat").click()
+            expect(page.get_by_text("Visible before clear", exact=True)).to_have_count(0)
+            mate_page.locator(".conversation-item").click()
+            expect(mate_page.get_by_text("Visible before clear", exact=True)).to_be_visible()
+            composer = mate_page.get_by_role("textbox", name="Private message")
+            composer.fill("New after clear")
+            mate_page.get_by_role("button", name="Send").click()
+            page.locator(".conversation-item").click()
+            expect(page.get_by_text("New after clear", exact=True)).to_be_visible(timeout=9000)
+            page.locator('summary[aria-label="Conversation actions for Bro Med"]').click()
+            page.locator(".conversation-action-list").get_by_role("button", name="Archive conversation").click()
+            page.locator("#archived-conversations-toggle").click()
+            expect(page.locator(".conversation-item strong")).to_have_text("Bro Med")
+            page.locator('summary[aria-label="Conversation actions for Bro Med"]').click()
+            page.locator(".conversation-action-list").get_by_role("button", name="Unarchive conversation").click()
+            page.locator("#archived-conversations-toggle").click()
+            expect(page.locator(".conversation-item strong")).to_have_text("Bro Med")
     finally:
         server.should_exit = True
         thread.join(timeout=5)
