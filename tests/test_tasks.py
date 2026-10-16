@@ -325,6 +325,87 @@ def test_shareable_join_code_request_approval_rotation_and_unread(tmp_path, monk
                 assert third.post("/api/projects/join-requests", json={"code":"SP-INVALID-CODE"}).status_code == 429
 
 
+def test_group_join_request_history_withdrawal_admin_scope_and_status(tmp_path, monkeypatch):
+    with client_for(tmp_path / "join-history.db", monkeypatch) as owner:
+        register(owner, "owner-history@example.edu", "Group Owner")
+        chemistry = owner.post("/api/projects", json={"name":"Chemistry Circle", "avatar":"mint"}).json()
+        physics = owner.post("/api/projects", json={"name":"Physics Circle", "avatar":"ocean"}).json()
+        with TestClient(app) as admin, TestClient(app) as student, TestClient(app) as stranger:
+            register(admin, "admin-history@example.edu", "Group Admin")
+            register(student, "student-history@example.edu", "Student")
+            register(stranger, "stranger-history@example.edu", "Stranger")
+            join_group(owner, admin, chemistry)
+            assert owner.patch(f"/api/projects/{chemistry['id']}/members/2", json={"role":"admin"}).status_code == 200
+
+            first = student.post("/api/projects/join-requests", json={"code":chemistry["join_code"]})
+            assert first.status_code == 202 and first.json()["status"] == "pending"
+            again = student.post("/api/projects/join-requests", json={"code":chemistry["join_code"]})
+            assert again.json() == first.json()
+            mine = student.get("/api/my/group-join-requests").json()
+            assert len(mine) == 1 and mine[0]["project_name"] == "Chemistry Circle" and mine[0]["project_avatar"] == "mint"
+            assert mine[0]["status"] == "pending" and mine[0]["created_at"]
+            assert student.get(f"/api/projects/{chemistry['id']}/join-requests").status_code == 404
+            assert stranger.get(f"/api/projects/{chemistry['id']}/join-requests").status_code == 404
+            assert stranger.get("/api/my/group-join-requests").json() == []
+            assert stranger.delete(f"/api/my/group-join-requests/{first.json()['request_id']}").status_code == 404
+            assert student.delete(f"/api/my/group-join-requests/{first.json()['request_id']}").status_code == 204
+            assert owner.get(f"/api/projects/{chemistry['id']}/join-requests").json() == []
+            assert student.get("/api/my/group-join-requests").json()[0]["status"] == "cancelled"
+
+            second = student.post("/api/projects/join-requests", json={"code":chemistry["join_code"]}).json()
+            requests = admin.get(f"/api/projects/{chemistry['id']}/join-requests")
+            assert requests.status_code == 200 and requests.json()[0]["user_id"] == 3
+            assert requests.json()[0]["project_name"] == "Chemistry Circle" and requests.json()[0]["avatar"] == "violet"
+            assert admin.get(f"/api/projects/{physics['id']}/join-requests").status_code == 404
+            assert owner.get("/api/projects").json()[0]["pending_join_request_count"] == 0
+            assert admin.get(f"/api/projects/{chemistry['id']}").json()["pending_join_request_count"] == 1
+            approved = admin.post(f"/api/projects/{chemistry['id']}/join-requests/{second['request_id']}/approve")
+            assert approved.status_code == 200 and approved.json()["status"] == "accepted"
+            assert admin.post(f"/api/projects/{chemistry['id']}/join-requests/{second['request_id']}/approve").status_code == 404
+            assert student.get("/api/my/group-join-requests").json()[0]["status"] == "accepted"
+            assert student.get("/api/projects").json()[0]["name"] == "Chemistry Circle"
+            assert student.get("/api/notifications").json()[0]["kind"] == "group_join_response"
+
+            third = student.post("/api/projects/join-requests", json={"code":physics["join_code"]}).json()
+            declined = owner.post(f"/api/projects/{physics['id']}/join-requests/{third['request_id']}/reject")
+            assert declined.status_code == 200 and declined.json()["status"] == "declined"
+            statuses = {(row["project_name"],row["status"]) for row in student.get("/api/my/group-join-requests").json()}
+            assert ("Chemistry Circle","accepted") in statuses and ("Physics Circle","declined") in statuses
+
+
+def test_classmate_profile_privacy_block_unblock_and_photo_removal(tmp_path, monkeypatch):
+    with client_for(tmp_path / "profiles-block.db", monkeypatch) as alice:
+        register(alice, "alice-profile@example.edu", "Alice")
+        with TestClient(app) as bob, TestClient(app) as stranger:
+            register(bob, "bob-profile@example.edu", "Bob")
+            register(stranger, "stranger-profile@example.edu", "Stranger")
+            alice.patch("/api/profile", json={"name":"Alice","bio":"Biology student"})
+            sent = alice.post("/api/friend-requests", json={"username":"bob-profile"})
+            assert sent.status_code == 201
+            assert bob.post(f"/api/friend-requests/{sent.json()['id']}/accept").status_code == 200
+            profile = alice.get("/api/people/2")
+            assert profile.status_code == 200
+            assert profile.json() == {"id":2,"name":"Bob","username":"bob-profile","avatar":"violet","bio":"","profile_photo":False,"relationship":"friends","can_message":True}
+            assert "email" not in profile.json() and stranger.get("/api/people/2").status_code == 404
+            conversation = alice.post("/api/direct/conversations", json={"recipient_id":2}).json()
+            assert alice.post(f"/api/direct/conversations/{conversation['id']}/messages", json={"body":"hello"}).status_code == 201
+            assert alice.post("/api/people/2/block").status_code == 204
+            assert alice.get("/api/people/2").status_code == 404
+            assert alice.get(f"/api/direct/conversations/{conversation['id']}/messages").status_code == 404
+            assert alice.post("/api/friend-requests", json={"username":"bob-profile"}).status_code == 404
+            blocked = alice.get("/api/friend-requests").json()
+            assert len(blocked) == 1 and blocked[0]["status"] == "blocked" and blocked[0]["blocked_by_me"] == 1
+            assert alice.post("/api/people/1/block").status_code == 400
+            assert alice.delete("/api/people/2/block").status_code == 204
+            assert alice.get("/api/friend-requests").json() == []
+            assert alice.post("/api/direct/conversations", json={"recipient_id":2}).status_code == 404
+
+            photo=Image.new("RGB",(96,64),"#6543d1");stream=io.BytesIO();photo.save(stream,format="PNG")
+            assert alice.post("/api/profile/photo",files={"photo":("avatar.png",stream.getvalue(),"image/png")}).status_code==200
+            assert alice.delete("/api/profile/photo").status_code==204
+            assert alice.get("/api/profile/photo").status_code==404
+
+
 def test_direct_message_pins_are_private_and_jumpable_data(tmp_path, monkeypatch):
     with client_for(tmp_path / "direct-pins.db", monkeypatch) as owner:
         register(owner, "owner@example.edu", "Owner")

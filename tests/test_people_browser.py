@@ -1,0 +1,236 @@
+import io
+import re
+import socket
+import threading
+import time
+from pathlib import Path
+
+from PIL import Image
+import pytest
+
+pytest.importorskip("playwright.sync_api")
+from playwright.sync_api import expect, sync_playwright
+
+from app.main import app
+
+
+def _free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _image_bytes():
+    image = Image.new("RGB", (720, 480))
+    pixels = image.load()
+    for x in range(image.width):
+        for y in range(image.height):
+            pixels[x, y] = (220, 60, 80) if x < image.width // 2 else (40, 105, 210)
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
+def test_join_request_ui_search_profile_photo_and_classmates(tmp_path, monkeypatch):
+    import uvicorn
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "people-browser.db"))
+    monkeypatch.setenv("SESSION_SECRET", "people-browser-session-key")
+    monkeypatch.setenv("COOKIE_SECURE", "false")
+    port = _free_port()
+    base = f"http://127.0.0.1:{port}"
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    browser = None
+    try:
+        deadline = time.time() + 10
+        import urllib.request
+        while time.time() < deadline and not server.started:
+            time.sleep(.05)
+        assert server.started
+        with urllib.request.urlopen(f"{base}/health", timeout=3) as response:
+            assert response.status == 200
+
+        with sync_playwright() as automation:
+            launch_options = {}
+            chrome = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+            if chrome.exists():
+                launch_options["executable_path"] = str(chrome)
+            browser = automation.chromium.launch(**launch_options)
+            owner = browser.new_context(viewport={"width":1280,"height":900})
+            admin = browser.new_context(viewport={"width":1280,"height":900})
+            student = browser.new_context(viewport={"width":1280,"height":900})
+            stranger = browser.new_context(viewport={"width":1280,"height":900})
+            for context in (owner, admin, student, stranger):
+                context.set_default_timeout(5000)
+            for context, email, username, name in (
+                (owner,"owner@example.edu","owner","Owner"),
+                (admin,"admin@example.edu","admin","Admin"),
+                (student,"student@example.edu","student","Student"),
+                (stranger,"stranger@example.edu","stranger","Stranger"),
+            ):
+                response=context.request.post(f"{base}/api/auth/register",data={"email":email,"username":username,"name":name,"password":"study-together-123"})
+                assert response.ok,response.text()
+            owner_api,admin_api,student_api,stranger_api=(c.request for c in (owner,admin,student,stranger))
+            chem=owner_api.post(f"{base}/api/projects",data={"name":"Chemistry Circle","avatar":"mint"}).json()
+            physics=owner_api.post(f"{base}/api/projects",data={"name":"Physics Circle","avatar":"ocean"}).json()
+            _ok=admin_api.post(f"{base}/api/projects/join-requests",data={"code":chem["join_code"]})
+            admin_req=owner_api.get(f"{base}/api/projects/{chem['id']}/join-requests").json()[0]
+            assert owner_api.post(f"{base}/api/projects/{chem['id']}/join-requests/{admin_req['id']}/approve").ok
+            assert owner_api.patch(f"{base}/api/projects/{chem['id']}/members/2",data={"role":"admin"}).ok
+            profile_photo=Image.new("RGB",(80,80),"#6657d9");photo_buffer=io.BytesIO();profile_photo.save(photo_buffer,format="PNG")
+            assert student_api.patch(f"{base}/api/profile",data={"name":"Student","bio":"Group study fan"}).ok
+            assert owner_api.post(f"{base}/api/friend-requests",data={"username":"student"}).ok
+            friend_id=student_api.get(f"{base}/api/friend-requests").json()[0]["id"]
+            assert student_api.post(f"{base}/api/friend-requests/{friend_id}/accept").ok
+            assert student_api.post(f"{base}/api/profile/photo",multipart={"photo":{"name":"face.png","mimeType":"image/png","buffer":photo_buffer.getvalue()}}).ok
+
+            # Student request submission, withdrawal, and persistent status history.
+            student_page=student.new_page()
+            student_page.goto(f"{base}/#/groups")
+            student_page.locator("#join-group-open").click()
+            student_page.locator("#join-form input[name=code]").fill(chem["join_code"])
+            student_page.locator("#join-form").get_by_role("button",name="Request to join").click()
+            expect(student_page.locator("#join-dialog")).not_to_be_visible()
+            student_page.locator("#my-join-requests-open").click()
+            expect(student_page.locator("#my-join-requests .join-request-status")).to_have_text("Pending")
+            student_page.locator("#my-join-requests").get_by_role("button",name="Withdraw").click()
+            confirm=student_page.locator("#action-confirm-dialog")
+            expect(confirm).to_be_visible()
+            confirm.get_by_role("button",name="Withdraw").click()
+            expect(student_page.locator("#my-join-requests .join-request-status")).to_have_text("Cancelled")
+            student_page.locator("#my-join-requests-dialog").get_by_role("button",name="Done").click()
+
+            # The admin can review their own group's incoming queue and approve.
+            student_page.locator("#join-group-open").click()
+            student_page.locator("#join-form input[name=code]").fill(chem["join_code"])
+            student_page.locator("#join-form").get_by_role("button",name="Request to join").click()
+            admin_page=admin.new_page()
+            admin_page.goto(f"{base}/#/groups")
+            expect(admin_page.locator(".project-request-badge")).to_contain_text("1 join request")
+            admin_page.locator(".project-request-badge").click()
+            expect(admin_page.locator("#join-requests-dialog")).to_be_visible()
+            expect(admin_page.locator("#group-join-requests .join-request-card")).to_contain_text("Student")
+            admin_page.locator("#group-join-requests").get_by_role("button",name="Accept").click()
+            expect(admin_page.locator("#group-join-requests")).to_contain_text("No pending requests")
+            student_page.locator("#my-join-requests-open").click()
+            expect(student_page.locator("#my-join-requests .join-request-status").filter(has_text="Accepted")).to_be_visible()
+            expect(student_page.locator("#my-join-requests .person-copy strong").filter(has_text="Chemistry Circle").first).to_be_visible()
+            student_page.locator("#my-join-requests-dialog").get_by_role("button",name="Done").click()
+
+            # Owner rejection is visible in the student's own request history.
+            student_page.locator("#join-group-open").click()
+            student_page.locator("#join-form input[name=code]").fill(physics["join_code"])
+            student_page.locator("#join-form").get_by_role("button",name="Request to join").click()
+            owner_page=owner.new_page()
+            owner_page.goto(f"{base}/#/groups")
+            owner_page.locator(".project-request-badge").first.click()
+            expect(owner_page.locator("#join-requests-dialog")).to_be_visible()
+            owner_page.locator("#group-join-requests").get_by_role("button",name="Decline").click()
+            student_page.locator("#my-join-requests-open").click()
+            expect(student_page.locator("#my-join-requests .join-request-status").filter(has_text="Rejected")).to_be_visible()
+            assert any(group["id"] == chem["id"] for group in student_api.get(f"{base}/api/projects").json())
+
+            # Profile modal is read-only, safe, and usable from classmate cards.
+            student_page.locator("#my-join-requests-dialog").get_by_role("button",name="Done").click()
+            student_page.goto(f"{base}/#/people")
+            student_page.locator("#people-tabs").get_by_role("button",name="Friends").click()
+            friend_card=student_page.locator("#people-panel-list .person-card").filter(has_text="Owner")
+            friend_card.locator(".profile-name-trigger").click()
+            profile=student_page.locator("#classmate-profile-dialog")
+            expect(profile).to_be_visible()
+            expect(profile).to_contain_text("@owner")
+            expect(profile).not_to_contain_text("@example.edu")
+            profile.locator(".classmate-profile-bio").get_by_text("No bio added yet.").is_visible()
+            profile.locator('summary[aria-label="More actions for Owner"]').click()
+            expect(profile.get_by_role("button",name="Block classmate")).to_be_visible()
+            profile.locator(".classmate-profile-avatar").click()
+            expect(student_page.locator("#profile-photo-viewer")).to_be_visible()
+            student_page.locator(".profile-photo-close").click()
+            profile.get_by_role("button",name="Close").click()
+
+            # Search results are explicit, temporary, and the empty state is neutral.
+            search=student_page.locator("#friend-search-form input[name=username]")
+            search.fill("owner")
+            expect(student_page.locator("#people-results")).to_be_empty()
+            student_page.locator("#friend-search-form").get_by_role("button",name="Search").click()
+            expect(student_page.locator("#people-results .person-card")).to_have_count(1)
+            search.fill("unknown-person")
+            expect(student_page.locator("#people-results")).to_be_empty()
+            student_page.locator("#friend-search-form").get_by_role("button",name="Search").click()
+            expect(student_page.locator(".people-search-empty strong")).to_have_text("No classmate found")
+            expect(student_page.locator(".people-search-empty")).not_to_have_css("color","rgb(196, 62, 76)")
+            student_page.locator("#people-tabs").get_by_role("button",name="Incoming").click()
+            expect(student_page.locator(".people-search-empty")).to_have_count(0)
+
+            # Light/dark selected tabs and block/unblock list actions.
+            friends_tab=student_page.locator("#people-tabs").get_by_role("button",name="Friends 1")
+            if friends_tab.get_attribute("aria-expanded") != "true":
+                friends_tab.click()
+            for theme in ("light","dark"):
+                student_page.evaluate("theme => document.documentElement.dataset.theme=theme",theme)
+                active=student_page.locator('#people-tabs .people-tab[aria-expanded="true"]')
+                assert active.evaluate("el => getComputedStyle(el).backgroundColor") != "rgba(0, 0, 0, 0)"
+                expect(active.locator("strong")).to_have_css("color", "rgb(73, 57, 174)" if theme=="light" else "rgb(232, 226, 255)")
+            student_page.locator("#people-panel-list").get_by_role("button",name="Block").click()
+            confirm=student_page.locator("#action-confirm-dialog")
+            expect(confirm).to_be_visible()
+            confirm.get_by_role("button",name="Block").click()
+            student_page.locator("#people-tabs").get_by_role("button",name="Blocked").click()
+            expect(student_page.locator("#people-panel-list").get_by_role("button",name="Unblock")).to_be_visible()
+            student_page.locator("#people-panel-list").get_by_role("button",name="Unblock").click()
+            expect(student_page.locator("#people-panel-list").get_by_role("button",name="Unblock")).to_have_count(0)
+            assert student_api.get(f"{base}/api/friend-requests").json() == []
+
+            # Real image crop: cancel keeps the saved photo unchanged; apply stores a square crop.
+            student_page.locator("#account-button").click()
+            student_page.locator("#profile-open").click()
+            student_page.locator("#profile-avatar-preview").click()
+            expect(student_page.locator("#profile-photo-viewer")).to_be_visible()
+            expect(student_page.locator("#profile-photo-editor")).not_to_be_visible()
+            student_page.locator(".profile-photo-close").click()
+            buffer=_image_bytes()
+            student_page.locator("#profile-photo-upload").click()
+            student_page.locator("#profile-photo").set_input_files({"name":"split.png","mimeType":"image/png","buffer":buffer})
+            expect(student_page.locator("#profile-photo-editor")).to_be_visible()
+            student_page.locator("#photo-zoom").fill("1.8")
+            crop=student_page.locator("#photo-crop-canvas").bounding_box()
+            student_page.mouse.move(crop["x"]+crop["width"]*.6,crop["y"]+crop["height"]*.5)
+            student_page.mouse.down();student_page.mouse.move(crop["x"]+crop["width"]*.35,crop["y"]+crop["height"]*.5);student_page.mouse.up()
+            student_page.locator("#profile-photo-editor").get_by_role("button",name="Cancel",exact=True).click()
+            expect(student_page.locator("#profile-photo-editor")).not_to_be_visible()
+            assert student_api.get(f"{base}/api/profile/photo").status == 200
+            student_page.locator("#profile-photo-upload").click()
+            student_page.locator("#profile-photo").set_input_files({"name":"split.png","mimeType":"image/png","buffer":buffer})
+            expect(student_page.locator("#profile-photo-editor")).to_be_visible()
+            student_page.locator("#photo-zoom").fill("1.5")
+            student_page.locator("#photo-crop-confirm").click()
+            expect(student_page.locator("#profile-avatar-preview")).to_have_attribute("style", re.compile("blob:"))
+            student_page.locator("#profile-form").get_by_role("button",name="Save profile").click()
+            expect(student_page.locator("#profile-saved")).to_have_text("Your profile is saved.")
+            saved=student_api.get(f"{base}/api/profile/photo")
+            assert saved.status==200 and Image.open(io.BytesIO(saved.body())).size==(512,512)
+            student_page.locator("#profile-avatar-preview").dblclick()
+            expect(student_page.locator("#profile-photo-editor")).to_be_visible()
+            student_page.locator("#profile-photo-editor").get_by_role("button",name="Cancel",exact=True).click()
+            student_page.locator("#profile-photo-remove").click()
+            expect(student_page.locator("#profile-photo-remove")).to_have_text("Photo will be removed")
+            student_page.locator("#profile-form").get_by_role("button",name="Save profile").click()
+            expect(student_page.locator("#profile-saved")).to_have_text("Your profile is saved.")
+            assert student_api.get(f"{base}/api/profile/photo").status==404
+
+            # Verify tab and photo panel fit at all approved viewport sizes and themes.
+            for width,theme in ((1280,"light"),(1280,"dark"),(1600,"light"),(1600,"dark"),(390,"light"),(390,"dark")):
+                student_page.set_viewport_size({"width":width,"height":844 if width==390 else 900})
+                student_page.evaluate("theme => document.documentElement.dataset.theme=theme",theme)
+                if not student_page.locator("#profile-dialog").evaluate("el => el.open"):
+                    student_page.locator("#account-button").click()
+                    student_page.locator("#profile-open").click()
+                box=student_page.locator("#profile-dialog").evaluate("el => {const r=el.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width,scroll:el.scrollWidth,client:el.clientWidth};}")
+                assert box["left"]>=0 and box["right"]<=width and box["scroll"]<=box["client"]+1
+                student_page.screenshot(path=str(tmp_path/f"profile-{width}-{theme}.png"))
+                student_page.locator('#profile-dialog button[data-close="profile-dialog"]').last.click()
+    finally:
+        server.should_exit=True
+        thread.join(timeout=5)

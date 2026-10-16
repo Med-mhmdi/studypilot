@@ -279,6 +279,17 @@ def get_profile_photo(user: User):
     return FileResponse(path, media_type="image/webp", headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
+@app.delete("/api/profile/photo", status_code=204)
+def delete_profile_photo(user: User):
+    with db.connect() as con:
+        row = con.execute("SELECT profile_photo FROM users WHERE id=?", (user["id"],)).fetchone()
+        filename = row["profile_photo"] if row else None
+        con.execute("UPDATE users SET profile_photo=NULL WHERE id=?", (user["id"],))
+    if filename and Path(filename).name == filename:
+        (db.database_path().parent / "profile-photos" / filename).unlink(missing_ok=True)
+    return Response(status_code=204)
+
+
 @app.post("/api/profile/password", status_code=204)
 def update_password(body: PasswordUpdate, user: User):
     with db.connect() as con:
@@ -295,7 +306,8 @@ def list_projects(user: User):
         return [dict(row) for row in con.execute("""SELECT p.*,CASE WHEN m.legacy_readonly=1 THEN 'viewer' ELSE COALESCE(m.role_v6,CASE m.role WHEN 'owner' THEN 'owner' ELSE 'student' END) END AS role,
             (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id=p.id) AS member_count,
             (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id) AS task_count,
-            (SELECT COUNT(*) FROM milestones ms WHERE ms.project_id=p.id) AS milestone_count
+            (SELECT COUNT(*) FROM milestones ms WHERE ms.project_id=p.id) AS milestone_count,
+            CASE WHEN COALESCE(m.role_v6,m.role) IN ('owner','admin') THEN (SELECT COUNT(*) FROM project_join_requests jr WHERE jr.project_id=p.id AND jr.status='pending') ELSE 0 END AS pending_join_request_count
             FROM projects p JOIN project_members m ON m.project_id=p.id
             WHERE m.user_id=? ORDER BY p.created_at DESC,p.id DESC""", (user["id"],)).fetchall()]
 
@@ -414,11 +426,41 @@ def request_group_membership(body: JoinCodeSubmit, user: User, request: Request)
         if con.execute("SELECT 1 FROM project_members WHERE project_id=? AND user_id=?", (project["id"], user["id"])).fetchone():
             return {"status": "already_member"}
         existing = con.execute("SELECT id,status FROM project_join_requests WHERE project_id=? AND user_id=? ORDER BY id DESC LIMIT 1", (project["id"], user["id"])).fetchone()
-        if existing and existing["status"] == "pending": return {"status": "pending"}
+        if existing and existing["status"] == "pending": return {"status": "pending", "request_id": existing["id"]}
         if existing and existing["status"] == "blocked": raise HTTPException(status_code=403, detail="you cannot request access to this group")
-        cur = con.execute("INSERT INTO project_join_requests(project_id,user_id) VALUES(?,?)", (project["id"], user["id"]))
+        try:
+            cur = con.execute("INSERT INTO project_join_requests(project_id,user_id) VALUES(?,?)", (project["id"], user["id"]))
+        except sqlite3.IntegrityError:
+            pending = con.execute("SELECT id FROM project_join_requests WHERE project_id=? AND user_id=? AND status='pending'", (project["id"], user["id"])).fetchone()
+            if pending:
+                return {"status": "pending", "request_id": pending["id"]}
+            raise HTTPException(status_code=409, detail="a request for this group is already being processed")
         con.execute("INSERT INTO notifications(user_id,project_id,actor_id,kind,detail) VALUES(?,?,?,'group_join_request',?)", (project["created_by"], project["id"], user["id"], f'A classmate asked to join “{project["name"]}”.'))
         return {"status": "pending", "request_id": cur.lastrowid}
+
+
+@app.get("/api/my/group-join-requests")
+def list_my_group_join_requests(user: User):
+    with db.connect() as con:
+        return [dict(row) for row in con.execute("""SELECT r.id,r.project_id,r.status,r.created_at,r.updated_at,
+            p.name AS project_name,p.avatar AS project_avatar
+            FROM project_join_requests r JOIN projects p ON p.id=r.project_id
+            WHERE r.user_id=? AND r.status IN ('pending','accepted','declined','cancelled')
+            ORDER BY CASE r.status WHEN 'pending' THEN 0 ELSE 1 END,r.updated_at DESC,r.id DESC""", (user["id"],)).fetchall()]
+
+
+@app.delete("/api/my/group-join-requests/{request_id}", status_code=204)
+def withdraw_group_join_request(request_id: int, user: User):
+    with db.connect() as con:
+        row = con.execute("""SELECT r.project_id,p.created_by,p.name FROM project_join_requests r
+            JOIN projects p ON p.id=r.project_id WHERE r.id=? AND r.user_id=? AND r.status='pending'""", (request_id,user["id"])).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="pending request not found")
+        changed = con.execute("UPDATE project_join_requests SET status='cancelled',updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=? AND user_id=? AND status='pending'", (request_id,user["id"]))
+        if changed.rowcount != 1:
+            raise HTTPException(status_code=409, detail="request is no longer pending")
+        con.execute("INSERT INTO notifications(user_id,project_id,actor_id,kind,detail) VALUES(?,?,?,'group_join_cancelled',?)", (row["created_by"],row["project_id"],user["id"],f'A student withdrew their request to join “{row["name"]}”.'))
+    return Response(status_code=204)
 
 
 @app.post("/api/projects/{project_id}/join-code/rotate")
@@ -440,7 +482,9 @@ def rotate_join_code(project_id: int, user: User):
 def list_group_join_requests(project_id: int, user: User):
     with db.connect() as con:
         if _membership(con, project_id, user["id"])["role"] not in {"owner", "admin"}: raise HTTPException(status_code=403, detail="admin access is required to review requests")
-        return [dict(r) for r in con.execute("SELECT r.id,r.status,r.created_at,u.id user_id,u.name,u.username FROM project_join_requests r JOIN users u ON u.id=r.user_id WHERE r.project_id=? AND r.status='pending' ORDER BY r.created_at", (project_id,)).fetchall()]
+        return [dict(r) for r in con.execute("""SELECT r.id,r.status,r.created_at,u.id user_id,u.name,u.username,u.avatar,u.profile_photo,p.name project_name,p.avatar project_avatar
+            FROM project_join_requests r JOIN users u ON u.id=r.user_id JOIN projects p ON p.id=r.project_id
+            WHERE r.project_id=? AND r.status='pending' ORDER BY r.created_at""", (project_id,)).fetchall()]
 
 
 @app.post("/api/projects/{project_id}/join-requests/{request_id}/{action}")
@@ -452,7 +496,8 @@ def review_group_join_request(project_id: int, request_id: int, action: str, use
         if item is None: raise HTTPException(status_code=404, detail="pending request not found")
         if item["user_id"] == user["id"]: raise HTTPException(status_code=403, detail="you cannot approve your own request")
         status = {"approve":"accepted", "reject":"declined", "block":"blocked"}[action]
-        con.execute("UPDATE project_join_requests SET status=?,reviewed_by=?,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=? AND status='pending'", (status, user["id"], request_id))
+        changed = con.execute("UPDATE project_join_requests SET status=?,reviewed_by=?,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=? AND project_id=? AND status='pending'", (status, user["id"], request_id, project_id))
+        if changed.rowcount != 1: raise HTTPException(status_code=409, detail="request is no longer pending")
         if action == "approve":
             con.execute("INSERT OR IGNORE INTO project_members(project_id,user_id,role,role_v6) VALUES(?,?,'editor','student')", (project_id, item["user_id"]))
             _log_activity(con, project_id, user["id"], "member_joined", "approved a group membership request")
@@ -499,9 +544,10 @@ def group_conversations(user: User, archived: bool = False):
 @app.get("/api/projects/{project_id}")
 def get_project(project_id: int, user: User):
     with db.connect() as con:
-        _membership(con, project_id, user["id"])
+        membership = _membership(con, project_id, user["id"])
         project = dict(con.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
-        project["role"] = _membership(con, project_id, user["id"])["role"]
+        project["role"] = membership["role"]
+        project["pending_join_request_count"] = con.execute("SELECT COUNT(*) FROM project_join_requests WHERE project_id=? AND status='pending'", (project_id,)).fetchone()[0] if membership["role"] in {"owner","admin"} else 0
         project["members"] = [dict(row) for row in con.execute("SELECT u.id,u.name,u.username,u.avatar,u.profile_photo,COALESCE(m.role_v6,CASE m.role WHEN 'owner' THEN 'owner' ELSE 'student' END) AS role,m.legacy_readonly,m.joined_at FROM project_members m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY CASE COALESCE(m.role_v6,m.role) WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,u.name", (project_id,)).fetchall()]
         return project
 
@@ -867,10 +913,11 @@ def search_people(user: User, q: str = Query(min_length=3, max_length=24)):
 def list_friend_requests(user: User):
     with db.connect() as con:
         return [dict(row) for row in con.execute("""SELECT f.id,f.status,f.created_at,f.requester_id,f.recipient_id,
+            CASE WHEN f.status='blocked' AND f.requester_id=? THEN 1 ELSE 0 END AS blocked_by_me,
             u.name,u.username,u.avatar,u.profile_photo,CASE WHEN f.recipient_id=? THEN 'incoming' ELSE 'outgoing' END AS direction
             FROM friend_requests f JOIN users u ON u.id=CASE WHEN f.recipient_id=? THEN f.requester_id ELSE f.recipient_id END
             WHERE (f.requester_id=? OR f.recipient_id=?) AND f.status IN ('pending','accepted','blocked') ORDER BY f.id DESC""",
-            (user["id"], user["id"], user["id"], user["id"])).fetchall()]
+            (user["id"], user["id"], user["id"], user["id"], user["id"])).fetchall()]
 
 
 @app.get("/api/people/{person_id}/photo")
@@ -879,7 +926,9 @@ def get_person_photo(person_id: int, user: User):
         blocked = con.execute("SELECT 1 FROM friend_requests WHERE status='blocked' AND ((requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?))", (user["id"], person_id, person_id, user["id"])).fetchone()
         connected = person_id == user["id"] or con.execute("""SELECT 1 WHERE EXISTS(SELECT 1 FROM project_members a JOIN project_members b ON a.project_id=b.project_id WHERE a.user_id=? AND b.user_id=?)
             OR EXISTS(SELECT 1 FROM friend_requests WHERE status='accepted' AND ((requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?)))""", (user["id"], person_id, user["id"], person_id, person_id, user["id"])).fetchone()
-        if blocked or not connected:
+        pending_admin = con.execute("""SELECT 1 FROM project_join_requests r JOIN project_members m ON m.project_id=r.project_id
+            WHERE r.user_id=? AND r.status='pending' AND m.user_id=? AND COALESCE(m.role_v6,m.role) IN ('owner','admin') LIMIT 1""", (person_id,user["id"])).fetchone()
+        if blocked or (not connected and not pending_admin):
             raise HTTPException(status_code=404, detail="profile photo not found")
         photo = con.execute("SELECT profile_photo FROM users WHERE id=?", (person_id,)).fetchone()
     if photo is None or not photo[0] or Path(photo[0]).name != photo[0]:
@@ -888,6 +937,56 @@ def get_person_photo(person_id: int, user: User):
     if not path.is_file():
         raise HTTPException(status_code=404, detail="profile photo not found")
     return FileResponse(path, media_type="image/webp", headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/api/people/{person_id}")
+def get_classmate_profile(person_id: int, user: User):
+    with db.connect() as con:
+        person = con.execute("SELECT id,name,username,avatar,bio,profile_photo FROM users WHERE id=?", (person_id,)).fetchone()
+        if person is None or person_id == user["id"]:
+            raise HTTPException(status_code=404, detail="classmate not found")
+        blocked = con.execute("SELECT 1 FROM friend_requests WHERE status='blocked' AND ((requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?))", (user["id"],person_id,person_id,user["id"])).fetchone()
+        if blocked:
+            raise HTTPException(status_code=404, detail="classmate not found")
+        friend = con.execute("SELECT 1 FROM friend_requests WHERE status='accepted' AND ((requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?))", (user["id"],person_id,person_id,user["id"])).fetchone()
+        group = con.execute("SELECT 1 FROM project_members mine JOIN project_members theirs ON mine.project_id=theirs.project_id WHERE mine.user_id=? AND theirs.user_id=? LIMIT 1", (user["id"],person_id)).fetchone()
+        if not friend and not group:
+            raise HTTPException(status_code=404, detail="classmate not found")
+        result = dict(person)
+        result["profile_photo"] = bool(result["profile_photo"])
+        result["relationship"] = "friends" if friend else "group_classmate"
+        result["can_message"] = True
+        return result
+
+
+@app.post("/api/people/{person_id}/block", status_code=204)
+def block_classmate(person_id: int, user: User):
+    if person_id == user["id"]:
+        raise HTTPException(status_code=400, detail="you cannot block yourself")
+    with db.connect() as con:
+        if con.execute("SELECT 1 FROM users WHERE id=?", (person_id,)).fetchone() is None:
+            raise HTTPException(status_code=404, detail="classmate not found")
+        rows = con.execute("SELECT id FROM friend_requests WHERE (requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?) ORDER BY id", (user["id"],person_id,person_id,user["id"])).fetchall()
+        if rows:
+            request_id = rows[0]["id"]
+            try:
+                con.execute("UPDATE friend_requests SET requester_id=?,recipient_id=?,status='blocked',updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?", (user["id"],person_id,request_id))
+            except sqlite3.IntegrityError:
+                con.execute("UPDATE friend_requests SET status='blocked',updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?", (request_id,))
+        else:
+            con.execute("INSERT INTO friend_requests(requester_id,recipient_id,status) VALUES(?,?,'blocked')", (user["id"],person_id))
+        con.execute("UPDATE friend_requests SET status='declined',updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE requester_id=? AND recipient_id=? AND status='pending'", (person_id,user["id"]))
+    return Response(status_code=204)
+
+
+@app.delete("/api/people/{person_id}/block", status_code=204)
+def unblock_classmate(person_id: int, user: User):
+    with db.connect() as con:
+        row = con.execute("SELECT id FROM friend_requests WHERE requester_id=? AND recipient_id=? AND status='blocked'", (user["id"],person_id)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="blocked classmate not found")
+        con.execute("UPDATE friend_requests SET status='declined',updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=? AND status='blocked'", (row["id"],))
+    return Response(status_code=204)
 
 
 @app.post("/api/friend-requests", status_code=201)
@@ -927,7 +1026,11 @@ def respond_friend_request(request_id: int, action: str, user: User):
         if action in {"accept", "decline"} and (row["recipient_id"] != user["id"] or row["status"] != "pending"):
             raise HTTPException(status_code=403, detail="only the recipient can respond to a pending request")
         status = {"accept": "accepted", "decline": "declined", "block": "blocked"}[action]
-        con.execute("UPDATE friend_requests SET status=?,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?", (status, request_id))
+        if action == "block":
+            other_id = row["recipient_id"] if row["requester_id"] == user["id"] else row["requester_id"]
+            con.execute("UPDATE friend_requests SET requester_id=?,recipient_id=?,status=?,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?", (user["id"],other_id,status,request_id))
+        else:
+            con.execute("UPDATE friend_requests SET status=?,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?", (status, request_id))
         if action in {"accept", "decline"}:
             con.execute("INSERT INTO notifications(user_id,actor_id,kind,detail) VALUES(?,?,?,?)", (row["requester_id"], user["id"], f"friend_request_{status}", "Your classmate request was accepted." if action == "accept" else "Your classmate request was declined."))
         return {"id": request_id, "status": status}

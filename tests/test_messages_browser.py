@@ -276,7 +276,7 @@ def test_messages_browser_group_direct_reply_unread_and_responsive(tmp_path, mon
             expect(page.locator(".new-messages-divider")).to_be_visible()
             for short_text in ("Direct hello", "Unread direct batch two"):
                 short_bubble = page.locator("#direct-stream p.message-bubble").filter(has_text=short_text).last
-                assert page.evaluate("el => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => { const r=document.createRange();r.selectNodeContents(el);resolve(r.getBoundingClientRect().height<=parseFloat(getComputedStyle(el).lineHeight)+1); })))", short_bubble.element_handle())
+                assert page.evaluate("el => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => { const r=document.createRange();r.selectNodeContents(el);resolve(r.getClientRects().length===1); })))", short_bubble.element_handle())
             page.get_by_role("textbox", name="Private message").fill("Typing dismisses divider")
             expect(page.locator(".new-messages-divider")).to_have_count(0)
 
@@ -425,7 +425,7 @@ def test_conversation_controls_and_notification_layout_browser(tmp_path, monkeyp
             expect(page.locator(".conversation-actions-menu[open]")).to_have_count(0)
             page.set_viewport_size({"width": 1280, "height": 900})
             page.locator(".conversation-item").click()
-            expect(page.locator(".thread-header h2")).to_have_text("Bro Med")
+            expect(page.locator(".thread-header .thread-profile-trigger")).to_have_text("Bro Med")
             page.locator('summary[aria-label="Conversation actions for Bro Med"]').click()
             page.locator(".conversation-action-list").get_by_role("button", name="Clear chat for me").click()
             page.locator("#action-confirm-dialog").get_by_role("button", name="Clear chat").click()
