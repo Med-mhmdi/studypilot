@@ -259,6 +259,33 @@ def test_messages_browser_group_direct_reply_unread_and_responsive(tmp_path, mon
             expect(direct_recipient_row.locator(".message-meta")).to_contain_text("edited")
             expect(direct_recipient_row.locator(".message-menu-items")).to_be_visible()
             expect(owner_direct_composer).to_have_value("Keep this direct draft")
+            # A block replaces the entire composer in both independent sessions; a fresh accepted request restores it live.
+            inbox_height_before=page.locator(".inbox").evaluate("el=>el.getBoundingClientRect().height")
+            assert owner.request.post(f"{base_url}/api/people/2/block").ok
+            owner_status=page.locator(".direct-composer-status")
+            mate_status=mate_page.locator(".direct-composer-status")
+            expect(owner_status).to_contain_text("You blocked this classmate",timeout=10000)
+            expect(mate_status).to_contain_text("Messaging is unavailable with this classmate",timeout=10000)
+            expect(page.locator(".direct-block-status")).to_be_hidden()
+            expect(owner_direct_composer).to_be_hidden()
+            expect(page.locator(".direct-form .character-counter")).to_be_hidden()
+            expect(page.locator(".direct-form").get_by_role("button",name="Send")).to_be_hidden()
+            expect(page.locator("#direct-stream .message-row")).not_to_have_count(0)
+            assert page.locator(".inbox").evaluate("el=>el.getBoundingClientRect().height")==inbox_height_before
+            assert page.locator(".direct-composer-status").evaluate("el=>{const a=el.getBoundingClientRect(),f=el.parentElement.getBoundingClientRect();return Math.abs((a.top+a.height/2)-(f.top+f.height/2))<2}")
+            page.set_viewport_size({"width":390,"height":844})
+            assert page.locator(".direct-composer-status").evaluate("el=>el.scrollWidth<=el.clientWidth+1")
+            page.set_viewport_size({"width":1280,"height":900})
+            owner_status.get_by_role("button",name="Unblock this classmate").click()
+            expect(owner_status).to_contain_text("Add this classmate to resume messaging")
+            expect(mate_status).to_contain_text("Add this classmate to resume messaging",timeout=10000)
+            assert mate.request.post(f"{base_url}/api/friend-requests",data={"username":"owner"}).ok
+            incoming=owner.request.get(f"{base_url}/api/friend-requests").json()
+            request_id=next(row["id"] for row in incoming if row["direction"]=="incoming" and row["status"]=="pending")
+            assert owner.request.post(f"{base_url}/api/friend-requests/{request_id}/accept").ok
+            expect(owner_direct_composer).to_be_visible(timeout=10000)
+            expect(page.locator(".direct-composer-status")).to_be_hidden()
+            expect(owner_direct_composer).to_have_value("Keep this direct draft")
             page.keyboard.press("Escape")
             page.locator("#conversation-tab-direct").click()
             expect(page.locator(".conversation-item").first).to_contain_text("Live direct edited by Mate")

@@ -530,7 +530,7 @@ def withdraw_group_join_request(request_id: int, user: User):
 @app.post("/api/projects/{project_id}/join-code/rotate")
 def rotate_join_code(project_id: int, user: User):
     with db.connect() as con:
-        if _membership(con, project_id, user["id"])["role"] != "owner": raise HTTPException(status_code=403, detail="only group owners can change the join code")
+        if _membership(con, project_id, user["id"])["role"] not in {"owner", "admin"}: raise HTTPException(status_code=403, detail="admin access is required to change the join code")
         alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
         for attempt in range(5):
             code = "SP-" + "".join(secrets.choice(alphabet) for _ in range(14))

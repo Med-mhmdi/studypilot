@@ -386,8 +386,14 @@ def test_group_join_request_history_withdrawal_admin_scope_and_status(tmp_path, 
             assert approved.status_code == 200 and approved.json()["status"] == "accepted"
             assert admin.post(f"/api/projects/{chemistry['id']}/join-requests/{second['request_id']}/approve").status_code == 404
             assert student.get("/api/my/group-join-requests").json()[0]["status"] == "accepted"
-            assert student.get("/api/projects").json()[0]["name"] == "Chemistry Circle"
-            assert student.get("/api/notifications").json()[0]["kind"] == "group_join_response"
+            student_group=student.get(f"/api/projects/{chemistry['id']}").json()
+            assert student_group["name"] == "Chemistry Circle" and student_group["join_code"] == chemistry["join_code"]
+            assert student.get(f"/api/projects/{chemistry['id']}/join-requests").status_code == 403
+            assert student.post(f"/api/projects/{chemistry['id']}/join-code/rotate").status_code == 403
+            rotated=admin.post(f"/api/projects/{chemistry['id']}/join-code/rotate")
+            assert rotated.status_code == 200 and rotated.json()["code"] != chemistry["join_code"]
+            assert student.get(f"/api/projects/{chemistry['id']}").json()["join_code"] == rotated.json()["code"]
+            assert any(item["kind"]=="group_join_response" for item in student.get("/api/notifications").json())
 
             third = student.post("/api/projects/join-requests", json={"code":physics["join_code"]}).json()
             declined = owner.post(f"/api/projects/{physics['id']}/join-requests/{third['request_id']}/reject")
