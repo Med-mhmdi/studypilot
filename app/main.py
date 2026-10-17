@@ -236,12 +236,11 @@ def update_profile(body: ProfileUpdate, user: User):
 
 @app.post("/api/profile/photo")
 async def upload_profile_photo(user: User, photo: UploadFile = File(...), original_photo: UploadFile | None = File(default=None), crop_settings: str | None = Form(default=None)):
-    raw = await photo.read(5 * 1024 * 1024 + 1)
+    max_photo_bytes = 8 * 1024 * 1024
+    raw = await photo.read(max_photo_bytes + 1)
     await photo.close()
-    if len(raw) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="photo must be 5 MB or smaller")
-    if photo.content_type not in {"image/jpeg", "image/png", "image/webp"}:
-        raise HTTPException(status_code=415, detail="choose a JPEG, PNG, or WebP image")
+    if len(raw) > max_photo_bytes:
+        raise HTTPException(status_code=413, detail="photo must be 8 MiB or smaller")
     try:
         with Image.open(io.BytesIO(raw)) as source:
             if source.format not in {"JPEG", "PNG", "WEBP"}:
@@ -260,12 +259,10 @@ async def upload_profile_photo(user: User, photo: UploadFile = File(...), origin
     original_raw = b""
     original_format = None
     if original_photo is not None:
-        original_raw = await original_photo.read(5 * 1024 * 1024 + 1)
+        original_raw = await original_photo.read(max_photo_bytes + 1)
         await original_photo.close()
-        if len(original_raw) > 5 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="original photo must be 5 MB or smaller")
-        if original_photo.content_type not in {"image/jpeg", "image/png", "image/webp"}:
-            raise HTTPException(status_code=415, detail="choose a JPEG, PNG, or WebP original photo")
+        if len(original_raw) > max_photo_bytes:
+            raise HTTPException(status_code=413, detail="original photo must be 8 MiB or smaller")
         try:
             with Image.open(io.BytesIO(original_raw)) as source:
                 if source.format not in {"JPEG", "PNG", "WEBP"} or source.width * source.height > 20_000_000:

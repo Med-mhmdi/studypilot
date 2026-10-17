@@ -769,7 +769,7 @@ def test_profile_photo_is_reencoded_and_svg_or_invalid_images_are_rejected(tmp_p
         assert decoded.format == "WEBP" and max(decoded.size) <= 512 and not decoded.getexif()
         assert alice.post("/api/profile/photo", files={"photo":("face.svg",b"<svg xmlns='http://www.w3.org/2000/svg'/>","image/svg+xml")}).status_code == 415
         assert alice.post("/api/profile/photo", files={"photo":("fake.jpg",b"not an image","image/jpeg")}).status_code == 415
-        assert alice.post("/api/profile/photo", files={"photo":("large.jpg",b"x"*(5*1024*1024+1),"image/jpeg")}).status_code == 413
+        assert alice.post("/api/profile/photo", files={"photo":("large.jpg",b"x"*(8*1024*1024+1),"image/jpeg")}).status_code == 413
         project=alice.post("/api/projects",json={"name":"Photo access group"}).json()
         with TestClient(app) as bob:
             register(bob, "bob@example.edu", "Bob")

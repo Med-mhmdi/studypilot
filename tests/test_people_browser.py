@@ -305,10 +305,19 @@ def test_join_request_ui_search_profile_photo_and_classmates(tmp_path, monkeypat
             expect(student_page.locator("#profile-photo-viewer")).to_be_visible()
             expect(student_page.locator("#profile-photo-editor")).not_to_be_visible()
             student_page.locator(".profile-photo-close").click()
+            student_page.locator("#profile-photo-upload").click()
+            student_page.locator("#profile-photo").set_input_files({"name":"bad.gif","mimeType":"image/gif","buffer":b"GIF89a"})
+            expect(student_page.locator("#profile-error")).to_contain_text("Unsupported image format")
+            student_page.locator("#profile-photo-upload").click()
+            student_page.locator("#profile-photo").set_input_files({"name":"damaged.png","mimeType":"image/png","buffer":b"not a PNG"})
+            expect(student_page.locator("#profile-error")).to_contain_text("appears damaged")
+            student_page.locator("#profile-photo-upload").click()
+            student_page.locator("#profile-photo").set_input_files({"name":"large.png","mimeType":"image/png","buffer":b"x"*(8*1024*1024+1)})
+            expect(student_page.locator("#profile-error")).to_contain_text("maximum size is 8 MiB")
             buffer=_image_bytes()
             student_page.locator("#profile-photo-upload").click()
             tall_buffer=_image_bytes((420,900))
-            student_page.locator("#profile-photo").set_input_files({"name":"portrait.png","mimeType":"image/png","buffer":tall_buffer})
+            student_page.locator("#profile-photo").set_input_files({"name":"portrait.png","mimeType":"application/octet-stream","buffer":tall_buffer})
             expect(student_page.locator("#profile-photo-editor")).to_be_visible()
             assert student_page.locator("#photo-crop-canvas").evaluate("el => {const d=el.getContext('2d').getImageData(0,0,el.width,el.height).data;for(let i=3;i<d.length;i+=4)if(d[i]!==255)return false;return true}")
             student_page.locator("#profile-photo-editor").get_by_role("button",name="Cancel",exact=True).click()
@@ -502,7 +511,7 @@ def test_block_ownership_is_directional_and_updates_open_views(tmp_path, monkeyp
                 response=context.request.post(f"{base}/api/auth/register",data={"email":email,"username":username,"name":name,"password":"study-together-123"})
                 assert response.ok,response.text()
             viewer_api,recipient_api=viewer.request,recipient.request
-            oversized=viewer_api.post(f"{base}/api/profile/photo",multipart={"photo":{"name":"oversized.png","mimeType":"image/png","buffer":b"x"*(5*1024*1024+1)}})
+            oversized=viewer_api.post(f"{base}/api/profile/photo",multipart={"photo":{"name":"oversized.png","mimeType":"image/png","buffer":b"x"*(8*1024*1024+1)}})
             assert oversized.status==413
             assert viewer_api.post(f"{base}/api/friend-requests",data={"username":"recipient"}).ok
             request=recipient_api.get(f"{base}/api/friend-requests").json()[0]
