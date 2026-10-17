@@ -414,7 +414,7 @@ def test_classmate_profile_privacy_block_unblock_and_photo_removal(tmp_path, mon
             assert bob.post(f"/api/friend-requests/{sent.json()['id']}/accept").status_code == 200
             profile = alice.get("/api/people/2")
             assert profile.status_code == 200
-            assert profile.json() == {"id":2,"name":"Bob","username":"bob-profile","avatar":"violet","active_avatar_source":"avatar","bio":"","profile_photo":False,"profile_photo_version":None,"relationship":"friends","blocked":False,"needs_friend_request":False,"can_message":True}
+            assert profile.json() == {"id":2,"name":"Bob","username":"bob-profile","avatar":"violet","active_avatar_source":"avatar","bio":"","profile_photo":False,"profile_photo_version":None,"relationship":"friends","blocked_by_me":False,"blocked_me":False,"blocked":False,"needs_friend_request":False,"can_message":True}
             public_profile=stranger.get("/api/people/2")
             assert public_profile.status_code==200 and public_profile.json()["relationship"]=="not_connected" and "email" not in public_profile.json()
             conversation = alice.post("/api/direct/conversations", json={"recipient_id":2}).json()
@@ -426,6 +426,8 @@ def test_classmate_profile_privacy_block_unblock_and_photo_removal(tmp_path, mon
             assert alice.post("/api/friend-requests", json={"username":"bob-profile"}).status_code == 403
             blocked = alice.get("/api/friend-requests").json()
             assert len(blocked) == 1 and blocked[0]["status"] == "blocked" and blocked[0]["blocked_by_me"] == 1
+            assert bob.get("/api/friend-requests").json() == []
+            assert alice.get("/api/people/search?q=bob-profile").json()[0]["relationship"] == "unavailable"
             assert alice.post("/api/people/1/block").status_code == 400
             assert alice.delete("/api/people/2/block").status_code == 204
             assert alice.get("/api/friend-requests").json() == []
@@ -461,7 +463,7 @@ def test_block_keeps_history_and_requires_renewed_friendship(tmp_path, monkeypat
                 denied=account.post(f"/api/direct/conversations/{conversation_id}/messages",json={"body":f"blocked from {sender_id}"})
                 assert denied.status_code==403 and "block" in denied.json()["detail"].lower()
                 search=account.get("/api/people/search?q="+("bob-transition" if sender_id==1 else "alice-transition")).json()
-                assert search and search[0]["relationship"]=="blocked"
+                assert search and search[0]["relationship"]=="unavailable"
                 assert account.post(f"/api/projects/{project['id']}/messages",json={"body":"Group chat still works"}).status_code==201
             assert alice.get("/api/people/2").json()["can_message"] is False
             assert alice.get(f"/api/projects/{project['id']}").status_code==200

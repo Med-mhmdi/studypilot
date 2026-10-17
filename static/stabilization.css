@@ -941,9 +941,11 @@ a.secondary-button {
 
 /* Consistent compact actions and footer states for the approved follow-up fixes. */
 .profile-photo-actions{grid-template-columns:repeat(2,minmax(0,1fr));width:100%;max-width:232px;gap:7px}
+.profile-photo-panel{container-type:inline-size}
 .profile-photo-actions button{width:100%;min-width:0;height:36px;min-height:36px;padding:0 7px;overflow:hidden;text-overflow:ellipsis;font:600 10px/1 system-ui,sans-serif}
 .profile-photo-actions button svg{width:17px;height:17px}
 @media(max-width:520px){.profile-photo-actions{grid-template-columns:repeat(2,minmax(0,1fr));max-width:232px}.profile-photo-actions button{width:100%;height:42px;min-height:42px;border-radius:12px}.profile-photo-actions .profile-action-label{position:static;width:auto;height:auto;padding:0;margin:0;overflow:visible;clip:auto;white-space:nowrap;border:0}}
+@container (max-width:190px){.profile-photo-actions .profile-action-label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.profile-photo-actions button{gap:0}}
 .classmate-action-button{font-weight:600}
 .classmate-action-button.success-action{background:#eaf7ef;border-color:#c6e8d2;color:#347653}
 .classmate-action-button.success-action:hover{background:#def2e6;border-color:#a9d9ba}

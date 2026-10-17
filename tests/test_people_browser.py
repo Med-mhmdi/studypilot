@@ -407,13 +407,29 @@ def test_join_request_ui_search_profile_photo_and_classmates(tmp_path, monkeypat
                     student_page.locator("#profile-open").click()
                 box=student_page.locator("#profile-dialog").evaluate("el => {const r=el.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width,scroll:el.scrollWidth,client:el.clientWidth};}")
                 assert box["left"]>=0 and box["right"]<=width and box["scroll"]<=box["client"]+1
-                action_metrics=student_page.locator(".profile-photo-actions button").evaluate_all("els=>els.map(el=>{const r=el.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height,label:el.getAttribute('aria-label')}})")
+                action_metrics=student_page.locator(".profile-photo-actions button").evaluate_all("els=>els.map(el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el),g=el.firstElementChild.getBoundingClientRect(),t=el.lastElementChild.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height,label:el.getAttribute('aria-label'),font:s.fontSize,weight:s.fontWeight,radius:s.borderRadius,contentCenter:(g.left+t.right)/2,buttonCenter:r.left+r.width/2}})")
                 assert len(action_metrics)==4 and len({(item["width"],item["height"]) for item in action_metrics})==1
                 assert all(not (a["left"]<b["right"] and a["right"]>b["left"] and a["top"]<b["bottom"] and a["bottom"]>b["top"]) for i,a in enumerate(action_metrics) for b in action_metrics[i+1:])
-                assert [item["label"] for item in action_metrics]==["View","Edit","Upload Photo","Remove Photo"]
+                assert [item["label"] for item in action_metrics]==["View","Edit","Upload","Remove"]
                 assert all(abs(item["height"]-(42 if width==390 else 36))<=1 for item in action_metrics)
+                assert all(abs(item["width"]-action_metrics[0]["width"])<0.1 and abs(item["height"]-action_metrics[0]["height"])<0.1 for item in action_metrics)
+                assert len({(item["font"],item["weight"],item["radius"]) for item in action_metrics})==1
+                assert all(abs(item["contentCenter"]-item["buttonCenter"])<3 for item in action_metrics), action_metrics
+                assert student_page.locator(".profile-photo-actions").evaluate("el=>{const b=el.getBoundingClientRect();return [...el.children].every(x=>{const r=x.getBoundingClientRect();return r.left>=b.left&&r.right<=b.right&&r.top>=b.top&&r.bottom<=b.bottom})}")
                 student_page.screenshot(path=str(screenshot_dir/f"profile-{width}-{theme}.png"))
                 student_page.locator('#profile-dialog button[data-close="profile-dialog"]').last.click()
+            student_page.locator("#account-button").click();student_page.locator("#profile-open").click()
+            photo_panel=student_page.locator(".profile-photo-panel")
+            photo_panel.evaluate("el=>{el.style.inlineSize='170px';el.style.maxInlineSize='170px'}")
+            compact=student_page.locator(".profile-photo-actions button")
+            expect(compact).to_have_count(4)
+            assert compact.first.evaluate("el=>getComputedStyle(el.lastElementChild).position==='absolute'")
+            assert all(compact.nth(index).get_attribute("aria-label")==label and compact.nth(index).get_attribute("title")==label for index,label in enumerate(("View","Edit","Upload","Remove")))
+            compact_boxes=compact.evaluate_all("els=>els.map(el=>{const r=el.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}})")
+            assert len({(item["width"],item["height"]) for item in compact_boxes})==1
+            assert all(not(a["left"]<b["right"] and a["right"]>b["left"] and a["top"]<b["bottom"] and a["bottom"]>b["top"]) for i,a in enumerate(compact_boxes) for b in compact_boxes[i+1:])
+            student_page.screenshot(path=str(screenshot_dir/"profile-compact-icons.png"))
+            student_page.locator('#profile-dialog button[data-close="profile-dialog"]').last.click()
             hidpi=browser.new_context(viewport={"width":390,"height":844},device_scale_factor=2)
             hidpi.set_default_timeout(5000)
             hidpi_page=hidpi.new_page();hidpi_page.goto(base)
@@ -421,7 +437,7 @@ def test_join_request_ui_search_profile_photo_and_classmates(tmp_path, monkeypat
             hidpi_page.locator("#auth-form input[name=password]").fill("study-together-123")
             hidpi_page.locator("#auth-submit").click()
             expect(hidpi_page.locator("#app-screen")).to_be_visible()
-            hidpi_page.locator("#account-button").click();hidpi_page.locator("#profile-open").click()
+            hidpi_page.locator("#account-button").click();expect(hidpi_page.locator("#account-menu")).to_be_visible();hidpi_page.locator("#profile-open").click()
             for width in (390,1280,1600):
                 hidpi_page.set_viewport_size({"width":width,"height":844 if width==390 else 900})
                 metrics=hidpi_page.locator(".profile-photo-actions button").evaluate_all("els=>els.map(el=>{const r=el.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}})")
@@ -450,4 +466,124 @@ def test_join_request_ui_search_profile_photo_and_classmates(tmp_path, monkeypat
             expect(student_page.locator("#auth-screen")).to_be_visible()
     finally:
         server.should_exit=True
+        thread.join(timeout=5)
+
+
+def test_block_ownership_is_directional_and_updates_open_views(tmp_path, monkeypatch):
+    import uvicorn
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "directional-block-browser.db"))
+    monkeypatch.setenv("SESSION_SECRET", "directional-block-browser-key")
+    monkeypatch.setenv("COOKIE_SECURE", "false")
+    port = _free_port()
+    base = f"http://127.0.0.1:{port}"
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    browser = None
+    try:
+        deadline = time.time() + 10
+        import urllib.request
+        while time.time() < deadline and not server.started:
+            time.sleep(.05)
+        assert server.started
+        with urllib.request.urlopen(f"{base}/health", timeout=3) as response:
+            assert response.status == 200
+        with sync_playwright() as automation:
+            browser = automation.chromium.launch()
+            viewer = browser.new_context(viewport={"width":1280,"height":900})
+            recipient = browser.new_context(viewport={"width":1280,"height":900})
+            for context in (viewer, recipient):
+                context.set_default_timeout(10000)
+            for context, email, username, name in (
+                (viewer,"viewer@example.edu","viewer","Viewer"),
+                (recipient,"recipient@example.edu","recipient","Recipient"),
+            ):
+                response=context.request.post(f"{base}/api/auth/register",data={"email":email,"username":username,"name":name,"password":"study-together-123"})
+                assert response.ok,response.text()
+            viewer_api,recipient_api=viewer.request,recipient.request
+            oversized=viewer_api.post(f"{base}/api/profile/photo",multipart={"photo":{"name":"oversized.png","mimeType":"image/png","buffer":b"x"*(5*1024*1024+1)}})
+            assert oversized.status==413
+            assert viewer_api.post(f"{base}/api/friend-requests",data={"username":"recipient"}).ok
+            request=recipient_api.get(f"{base}/api/friend-requests").json()[0]
+            assert recipient_api.post(f"{base}/api/friend-requests/{request['id']}/accept").ok
+            project=viewer_api.post(f"{base}/api/projects",data={"name":"Directional block group","description":"","avatar":"violet"}).json()
+            assert recipient_api.post(f"{base}/api/projects/join-requests",data={"code":project["join_code"]}).ok
+            join_request=viewer_api.get(f"{base}/api/projects/{project['id']}/join-requests").json()[0]
+            assert viewer_api.post(f"{base}/api/projects/{project['id']}/join-requests/{join_request['id']}/approve").ok
+            conversation=viewer_api.post(f"{base}/api/direct/conversations",data={"recipient_id":2}).json()
+
+            viewer_people=viewer.new_page();viewer_people.goto(f"{base}/#/people")
+            viewer_people.locator("#people-tabs").get_by_role("button",name="Friends 1").click()
+            viewer_people.locator("#people-panel-list .profile-name-trigger").click()
+            viewer_profile=viewer_people.locator("#classmate-profile-dialog")
+            expect(viewer_profile.get_by_role("button",name="Block Recipient")).to_be_visible()
+            viewer_group=viewer.new_page();viewer_group.goto(f"{base}/#/groups/{project['id']}")
+            viewer_group.locator(".member-profile-trigger").filter(has_text="Recipient").click()
+            group_profile=viewer_group.locator("#classmate-profile-dialog")
+            expect(group_profile.get_by_role("button",name="Block Recipient")).to_be_visible()
+
+            recipient_people=recipient.new_page();recipient_people.goto(f"{base}/#/people")
+            recipient_people.locator("#people-tabs").get_by_role("button",name="Friends 1").click()
+            recipient_people.locator("#people-panel-list .profile-name-trigger").click()
+            recipient_profile=recipient_people.locator("#classmate-profile-dialog")
+            recipient_messages=recipient.new_page();recipient_messages.goto(f"{base}/#/messages")
+            recipient_messages.locator("#conversation-tab-direct").click()
+            expect(recipient_messages.locator(".conversation-item")).to_have_count(1)
+            recipient_messages.locator(".conversation-item").click()
+            recipient_status=recipient_messages.locator(".direct-composer-status")
+
+            # One directional block: only its owner can remove it.
+            assert viewer_api.post(f"{base}/api/people/2/block").ok
+            viewer_state=viewer_api.get(f"{base}/api/people/2").json()
+            recipient_state=recipient_api.get(f"{base}/api/people/1").json()
+            assert (viewer_state["blocked_by_me"],viewer_state["blocked_me"])==(True,False)
+            assert (recipient_state["blocked_by_me"],recipient_state["blocked_me"])==(False,True)
+            assert recipient_api.delete(f"{base}/api/people/1/block").status==404
+            expect(viewer_profile.get_by_role("button",name="Unblock Recipient")).to_be_visible(timeout=10000)
+            expect(group_profile.get_by_role("button",name="Unblock Recipient")).to_be_visible(timeout=10000)
+            viewer_profile.get_by_role("button",name="Close").click()
+            expect(viewer_people.locator("#people-tabs").get_by_role("button",name="Blocked 1")).to_be_visible(timeout=10000)
+            viewer_people.locator("#people-tabs").get_by_role("button",name="Blocked 1").click()
+            viewer_people.locator("#people-panel-list .profile-name-trigger").click()
+            viewer_profile=viewer_people.locator("#classmate-profile-dialog")
+            group_profile.get_by_role("button",name="Close").click()
+            group_menu=viewer_group.locator(".member-row").filter(has_text="Recipient").locator(".member-actions-menu")
+            group_menu.locator("summary").click()
+            unavailable_group_message=group_menu.get_by_role("button",name="Messaging unavailable")
+            expect(unavailable_group_message).to_be_disabled(timeout=10000)
+            group_menu.evaluate("el=>el.open=false")
+            viewer_group.locator(".member-profile-trigger").filter(has_text="Recipient").click()
+            group_profile=viewer_group.locator("#classmate-profile-dialog")
+            expect(recipient_profile).to_contain_text("Messaging is unavailable with this classmate",timeout=10000)
+            expect(recipient_profile.get_by_role("button",name="Unblock Viewer")).to_have_count(0)
+            expect(recipient_status).to_contain_text("Messaging is unavailable with this classmate",timeout=10000)
+            expect(recipient_status.get_by_role("button",name="Unblock this classmate")).to_have_count(0)
+            expect(recipient_messages.get_by_role("textbox",name="Private message")).to_be_hidden()
+            assert recipient_api.post(f"{base}/api/direct/conversations/{conversation['id']}/messages",data={"body":"blocked"}).status==403
+
+            # Reciprocal blocks remain independent, and each person can remove only their own.
+            assert recipient_api.post(f"{base}/api/people/1/block").ok
+            viewer_state=viewer_api.get(f"{base}/api/people/2").json()
+            recipient_state=recipient_api.get(f"{base}/api/people/1").json()
+            assert (viewer_state["blocked_by_me"],viewer_state["blocked_me"])==(True,True)
+            assert (recipient_state["blocked_by_me"],recipient_state["blocked_me"])==(True,True)
+            expect(recipient_profile.get_by_role("button",name="Unblock Viewer")).to_be_visible(timeout=10000)
+            assert viewer_api.delete(f"{base}/api/people/2/block").status==204
+            viewer_state=viewer_api.get(f"{base}/api/people/2").json()
+            assert (viewer_state["blocked_by_me"],viewer_state["blocked_me"])==(False,True)
+            expect(viewer_profile.get_by_role("button",name="Unblock Recipient")).to_have_count(0,timeout=10000)
+            expect(group_profile.get_by_role("button",name="Unblock Recipient")).to_have_count(0,timeout=10000)
+            assert viewer_api.delete(f"{base}/api/people/2/block").status==404
+            assert viewer_api.post(f"{base}/api/direct/conversations/{conversation['id']}/messages",data={"body":"still blocked"}).status==403
+
+            # Once both remove their own block, old friendships still require a fresh request.
+            assert recipient_api.delete(f"{base}/api/people/1/block").status==204
+            for api,other_id in ((viewer_api,2),(recipient_api,1)):
+                state=api.get(f"{base}/api/people/{other_id}").json()
+                assert not state["blocked_by_me"] and not state["blocked_me"]
+                assert state["needs_friend_request"] and not state["can_message"]
+            assert viewer_api.post(f"{base}/api/direct/conversations/{conversation['id']}/messages",data={"body":"reconnect first"}).status==403
+    finally:
+        server.should_exit = True
         thread.join(timeout=5)

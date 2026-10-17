@@ -613,6 +613,17 @@ def get_project(project_id: int, user: User):
         project["role"] = membership["role"]
         project["pending_join_request_count"] = con.execute("SELECT COUNT(*) FROM project_join_requests WHERE project_id=? AND status='pending'", (project_id,)).fetchone()[0] if membership["role"] in {"owner","admin"} else 0
         project["members"] = [dict(row) for row in con.execute("SELECT u.id,u.name,u.username,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source,COALESCE(m.role_v6,CASE m.role WHEN 'owner' THEN 'owner' ELSE 'student' END) AS role,m.legacy_readonly,m.joined_at FROM project_members m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY CASE COALESCE(m.role_v6,m.role) WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,u.name", (project_id,)).fetchall()]
+        for member in project["members"]:
+            if member["id"] == user["id"]:
+                continue
+            other = member["id"]
+            blocked_by_me = con.execute("SELECT 1 FROM friend_requests WHERE status='blocked' AND requester_id=? AND recipient_id=?",(user["id"],other)).fetchone()
+            blocked_me = con.execute("SELECT 1 FROM friend_requests WHERE status='blocked' AND requester_id=? AND recipient_id=?",(other,user["id"])).fetchone()
+            friend = con.execute("SELECT 1 FROM friend_requests WHERE status='accepted' AND ((requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?))",(user["id"],other,other,user["id"])).fetchone()
+            pair=tuple(sorted((user["id"],other)))
+            prior=con.execute("SELECT requires_friendship FROM direct_conversations WHERE user_a=? AND user_b=?",pair).fetchone()
+            blocked=bool(blocked_by_me or blocked_me)
+            member.update(relationship_blocked=blocked,blocked_by_me=bool(blocked_by_me),blocked_me=bool(blocked_me),can_message=bool(not blocked and (friend or not (prior and prior[0]))))
         return project
 
 
@@ -973,7 +984,7 @@ def search_people(user: User, q: str = Query(min_length=3, max_length=24)):
     term = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     with db.connect() as con:
         return [dict(row) for row in con.execute("""SELECT u.id,u.name,u.username,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source,
-            CASE WHEN EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='blocked' AND ((f.requester_id=? AND f.recipient_id=u.id) OR (f.recipient_id=? AND f.requester_id=u.id))) THEN 'blocked'
+            CASE WHEN EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='blocked' AND ((f.requester_id=? AND f.recipient_id=u.id) OR (f.recipient_id=? AND f.requester_id=u.id))) THEN 'unavailable'
                  WHEN EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='accepted' AND ((f.requester_id=? AND f.recipient_id=u.id) OR (f.recipient_id=? AND f.requester_id=u.id))) THEN 'friends'
                  WHEN EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='pending' AND f.requester_id=? AND f.recipient_id=u.id) THEN 'request_sent'
                  WHEN EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='pending' AND f.recipient_id=? AND f.requester_id=u.id) THEN 'incoming_request'
@@ -991,8 +1002,9 @@ def list_friend_requests(user: User):
             CASE WHEN f.status='blocked' AND f.requester_id=? THEN 1 ELSE 0 END AS blocked_by_me,
             u.name,u.username,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source,CASE WHEN f.recipient_id=? THEN 'incoming' ELSE 'outgoing' END AS direction
             FROM friend_requests f JOIN users u ON u.id=CASE WHEN f.recipient_id=? THEN f.requester_id ELSE f.recipient_id END
-            WHERE (f.requester_id=? OR f.recipient_id=?) AND f.status IN ('pending','accepted','blocked') ORDER BY f.id DESC""",
-            (user["id"], user["id"], user["id"], user["id"], user["id"])).fetchall()]
+            WHERE (f.requester_id=? OR f.recipient_id=?) AND f.status IN ('pending','accepted','blocked')
+              AND (f.status<>'blocked' OR f.requester_id=?) ORDER BY f.id DESC""",
+            (user["id"], user["id"], user["id"], user["id"], user["id"], user["id"])).fetchall()]
 
 
 @app.get("/api/people/{person_id}/photo")
@@ -1016,15 +1028,19 @@ def get_classmate_profile(person_id: int, user: User):
         person = con.execute("SELECT id,name,username,avatar,bio,profile_photo,profile_photo_version,active_avatar_source FROM users WHERE id=?", (person_id,)).fetchone()
         if person is None or person_id == user["id"]:
             raise HTTPException(status_code=404, detail="classmate not found")
-        blocked = con.execute("SELECT 1 FROM friend_requests WHERE status='blocked' AND ((requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?))", (user["id"],person_id,person_id,user["id"])).fetchone()
+        blocked_by_me = con.execute("SELECT 1 FROM friend_requests WHERE status='blocked' AND requester_id=? AND recipient_id=?", (user["id"],person_id)).fetchone()
+        blocked_me = con.execute("SELECT 1 FROM friend_requests WHERE status='blocked' AND requester_id=? AND recipient_id=?", (person_id,user["id"])).fetchone()
         friend = con.execute("SELECT 1 FROM friend_requests WHERE status='accepted' AND ((requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?))", (user["id"],person_id,person_id,user["id"])).fetchone()
         group = con.execute("SELECT 1 FROM project_members mine JOIN project_members theirs ON mine.project_id=theirs.project_id WHERE mine.user_id=? AND theirs.user_id=? LIMIT 1", (user["id"],person_id)).fetchone()
         history = con.execute("SELECT 1 FROM direct_conversations WHERE user_a=? AND user_b=?",tuple(sorted((user["id"],person_id)))).fetchone()
         result = dict(person)
         result["profile_photo"] = bool(result["profile_photo"])
         pending = con.execute("SELECT 1 FROM friend_requests WHERE status='pending' AND ((requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?)) LIMIT 1", (user["id"],person_id,person_id,user["id"])).fetchone()
-        result["relationship"] = "blocked" if blocked else "friends" if friend else "group_classmate" if group else "pending" if pending else "former_classmate" if history else "not_connected"
-        result["blocked"] = bool(blocked)
+        blocked = bool(blocked_by_me or blocked_me)
+        result["relationship"] = "friends" if friend else "group_classmate" if group else "pending" if pending else "former_classmate" if history else "not_connected"
+        result["blocked_by_me"] = bool(blocked_by_me)
+        result["blocked_me"] = bool(blocked_me)
+        result["blocked"] = blocked
         pair=tuple(sorted((user["id"],person_id)))
         old=con.execute("SELECT requires_friendship FROM direct_conversations WHERE user_a=? AND user_b=?",pair).fetchone()
         needs_friend=bool(old and old[0] and not friend)
@@ -1034,14 +1050,13 @@ def get_classmate_profile(person_id: int, user: User):
 
 
 def _set_blocked(con: sqlite3.Connection, user_id: int, person_id: int) -> None:
-    rows=con.execute("SELECT id FROM friend_requests WHERE (requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?) ORDER BY id",(user_id,person_id,person_id,user_id)).fetchall()
-    if rows:
-        for duplicate in rows[1:]:
-            con.execute("DELETE FROM friend_requests WHERE id=?",(duplicate["id"],))
-        con.execute("UPDATE friend_requests SET requester_id=?,recipient_id=?,status='blocked',updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?",(user_id,person_id,rows[0]["id"]))
+    own=con.execute("SELECT id,status FROM friend_requests WHERE requester_id=? AND recipient_id=?",(user_id,person_id)).fetchone()
+    if own:
+        if own["status"] != "blocked":
+            con.execute("UPDATE friend_requests SET status='blocked',updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?",(own["id"],))
     else:
         con.execute("INSERT INTO friend_requests(requester_id,recipient_id,status) VALUES(?,?,'blocked')",(user_id,person_id))
-    con.execute("UPDATE friend_requests SET status='declined',updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE requester_id=? AND recipient_id=? AND status='pending'",(person_id,user_id))
+    con.execute("UPDATE friend_requests SET status='declined',updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE requester_id=? AND recipient_id=? AND status<>'blocked'",(person_id,user_id))
     lower,upper=sorted((user_id,person_id))
     con.execute("INSERT OR IGNORE INTO direct_conversations(user_a,user_b,requires_friendship) VALUES(?,?,1)",(lower,upper))
     con.execute("UPDATE direct_conversations SET requires_friendship=1 WHERE user_a=? AND user_b=?",(lower,upper))
@@ -1075,9 +1090,10 @@ def send_friend_request(body: FriendRequestCreate, user: User):
         if target is None or target["id"] == user["id"]:
             raise HTTPException(status_code=404, detail="classmate not found")
         a, b = sorted((user["id"], target["id"]))
-        existing = con.execute("SELECT * FROM friend_requests WHERE (requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?)", (a, b, b, a)).fetchone()
-        if existing and existing["status"] == "blocked":
+        blocked = con.execute("SELECT 1 FROM friend_requests WHERE status='blocked' AND ((requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?)) LIMIT 1", (user["id"],target["id"],target["id"],user["id"])).fetchone()
+        if blocked:
             raise HTTPException(status_code=403, detail="Unblock this classmate before sending a new request.")
+        existing = con.execute("SELECT * FROM friend_requests WHERE (requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?)", (a, b, b, a)).fetchone()
         if existing and existing["status"] == "accepted":
             raise HTTPException(status_code=409, detail="you are already connected")
         if existing and existing["status"] == "pending":
@@ -1160,9 +1176,10 @@ def list_direct_conversations(user: User, archived: bool = False):
             cutoff=row["cleared_through_id"]
             latest=con.execute("SELECT body,sender_id,created_at FROM direct_messages WHERE conversation_id=? AND id>? ORDER BY id DESC LIMIT 1",(row["id"],cutoff)).fetchone()
             unread=con.execute("SELECT COUNT(*),MIN(id) FROM direct_messages WHERE conversation_id=? AND id>? AND sender_id<>? AND read_at IS NULL",(row["id"],cutoff,user["id"])).fetchone()
-            blocker=con.execute("SELECT requester_id FROM friend_requests WHERE status='blocked' AND ((requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?))",(pair[0],pair[1],pair[1],pair[0])).fetchone()
+            blocked_by_me=con.execute("SELECT 1 FROM friend_requests WHERE status='blocked' AND requester_id=? AND recipient_id=?",(user["id"],other)).fetchone()
+            blocked_me=con.execute("SELECT 1 FROM friend_requests WHERE status='blocked' AND requester_id=? AND recipient_id=?",(other,user["id"])).fetchone()
             row.update(last_message=latest["body"] if latest else None,last_message_sender_id=latest["sender_id"] if latest else None,last_message_at=latest["created_at"] if latest else None,
-                unread_count=max(int(row["unread_override"]),int(unread[0])),first_unread_message_id=unread[1],relationship_blocked=bool(blocked),blocked_by_me=bool(blocker and blocker[0]==user["id"]),can_message=bool(not blocked and (friend or group) and (friend or not row["requires_friendship"])))
+                unread_count=max(int(row["unread_override"]),int(unread[0])),first_unread_message_id=unread[1],relationship_blocked=bool(blocked),blocked_by_me=bool(blocked_by_me),blocked_me=bool(blocked_me),can_message=bool(not blocked and (friend or group) and (friend or not row["requires_friendship"])))
             result.append(row)
         result.sort(key=lambda row:row["last_message_at"] or row["created_at"],reverse=True)
         result.sort(key=lambda row:int(row["pinned"]),reverse=True)
