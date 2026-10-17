@@ -168,7 +168,7 @@ def test_direct_messages_are_private_to_shared_group_participants(tmp_path, monk
             register(ben, "ben@example.edu", "Ben")
             join_group(alice, ben, project)
             contacts = ben.get("/api/people").json()
-            assert contacts == [{"id": 1, "name": "Alice", "username": "alice", "avatar": "violet", "profile_photo": None}]
+            assert contacts == [{"id": 1, "name": "Alice", "username": "alice", "avatar": "violet", "profile_photo": None, "profile_photo_version": None}]
             group_search = ben.get("/api/people/search?q=alice").json()
             assert group_search[0]["relationship"] == "group_classmate"
             conversation = ben.post("/api/direct/conversations", json={"recipient_id": 1})
@@ -240,7 +240,7 @@ def test_username_friend_request_accept_block_and_private_access(tmp_path, monke
         with TestClient(app) as bob:
             register(bob, "bobby@example.edu", "Bobby")
             search = alice.get("/api/people/search?q=bob").json()
-            assert search == [{"id": 2, "name": "Bobby", "username": "bobby", "avatar": "violet", "profile_photo": None, "relationship": "not_connected"}]
+            assert search == [{"id": 2, "name": "Bobby", "username": "bobby", "avatar": "violet", "profile_photo": None, "profile_photo_version": None, "relationship": "not_connected"}]
             assert alice.get("/api/people/search?q=%%%").json() == []
             assert "email" not in search[0]
             assert alice.patch("/api/profile", json={"name": "Alice", "username": "BOBBY"}).status_code == 409
@@ -253,14 +253,15 @@ def test_username_friend_request_accept_block_and_private_access(tmp_path, monke
             assert conversation.status_code == 201
             conversation_id = conversation.json()["id"]
             message=bob.post(f"/api/direct/conversations/{conversation_id}/messages", json={"body": "Study together?"}).json()
-            assert alice.get("/api/notifications").json()[0]["kind"] == "direct_message"
+            assert any(row["kind"] == "direct_message" for row in alice.get("/api/notifications").json())
             assert alice.patch(f"/api/direct/conversations/{conversation_id}/messages/{message['id']}",json={"body":"No"}).status_code == 403
             assert bob.patch(f"/api/direct/conversations/{conversation_id}/messages/{message['id']}",json={"body":"Edited"}).json()["edited_at"]
             assert bob.delete(f"/api/direct/conversations/{conversation_id}/messages/{message['id']}").status_code == 204
             assert alice.get(f"/api/direct/conversations/{conversation_id}/messages").json()[0]["deleted_at"]
             assert alice.post(f"/api/friend-requests/{request.json()['id']}/block").json()["status"] == "blocked"
-            assert alice.get(f"/api/direct/conversations/{conversation_id}/messages").status_code == 404
-            assert bob.post("/api/direct/conversations", json={"recipient_id": 1}).status_code == 404
+            assert alice.get(f"/api/direct/conversations/{conversation_id}/messages").status_code == 200
+            assert alice.post(f"/api/direct/conversations/{conversation_id}/messages", json={"body":"blocked send"}).status_code == 403
+            assert bob.post("/api/direct/conversations", json={"recipient_id": 1}).status_code == 403
 
 
 def test_group_message_edit_delete_pin_authorization(tmp_path, monkeypatch):
@@ -385,25 +386,66 @@ def test_classmate_profile_privacy_block_unblock_and_photo_removal(tmp_path, mon
             assert bob.post(f"/api/friend-requests/{sent.json()['id']}/accept").status_code == 200
             profile = alice.get("/api/people/2")
             assert profile.status_code == 200
-            assert profile.json() == {"id":2,"name":"Bob","username":"bob-profile","avatar":"violet","bio":"","profile_photo":False,"relationship":"friends","can_message":True}
+            assert profile.json() == {"id":2,"name":"Bob","username":"bob-profile","avatar":"violet","bio":"","profile_photo":False,"profile_photo_version":None,"relationship":"friends","blocked":False,"needs_friend_request":False,"can_message":True}
             assert "email" not in profile.json() and stranger.get("/api/people/2").status_code == 404
             conversation = alice.post("/api/direct/conversations", json={"recipient_id":2}).json()
             assert alice.post(f"/api/direct/conversations/{conversation['id']}/messages", json={"body":"hello"}).status_code == 201
             assert alice.post("/api/people/2/block").status_code == 204
-            assert alice.get("/api/people/2").status_code == 404
-            assert alice.get(f"/api/direct/conversations/{conversation['id']}/messages").status_code == 404
-            assert alice.post("/api/friend-requests", json={"username":"bob-profile"}).status_code == 404
+            assert alice.get("/api/people/2").status_code == 200
+            assert alice.get(f"/api/direct/conversations/{conversation['id']}/messages").status_code == 200
+            assert alice.post(f"/api/direct/conversations/{conversation['id']}/messages",json={"body":"blocked"}).status_code == 403
+            assert alice.post("/api/friend-requests", json={"username":"bob-profile"}).status_code == 403
             blocked = alice.get("/api/friend-requests").json()
             assert len(blocked) == 1 and blocked[0]["status"] == "blocked" and blocked[0]["blocked_by_me"] == 1
             assert alice.post("/api/people/1/block").status_code == 400
             assert alice.delete("/api/people/2/block").status_code == 204
             assert alice.get("/api/friend-requests").json() == []
-            assert alice.post("/api/direct/conversations", json={"recipient_id":2}).status_code == 404
+            assert alice.post("/api/direct/conversations", json={"recipient_id":2}).status_code == 403
 
             photo=Image.new("RGB",(96,64),"#6543d1");stream=io.BytesIO();photo.save(stream,format="PNG")
             assert alice.post("/api/profile/photo",files={"photo":("avatar.png",stream.getvalue(),"image/png")}).status_code==200
             assert alice.delete("/api/profile/photo").status_code==204
             assert alice.get("/api/profile/photo").status_code==404
+
+
+def test_block_keeps_history_and_requires_renewed_friendship(tmp_path, monkeypatch):
+    with client_for(tmp_path / "block-transition.db", monkeypatch) as alice:
+        register(alice, "alice-transition@example.edu", "Alice")
+        project=alice.post("/api/projects",json={"name":"Shared group"}).json()
+        with TestClient(app) as bob:
+            register(bob,"bob-transition@example.edu","Bob")
+            join_group(alice,bob,project)
+            request=alice.post("/api/friend-requests",json={"username":"bob-transition"}).json()
+            assert bob.post(f"/api/friend-requests/{request['id']}/accept").status_code==200
+            conversation=alice.post("/api/direct/conversations",json={"recipient_id":2}).json()
+            conversation_id=conversation["id"]
+            old=alice.post(f"/api/direct/conversations/{conversation_id}/messages",json={"body":"Old history stays"}).json()
+            assert bob.post(f"/api/direct/conversations/{conversation_id}/messages/{old['id']}/pin").status_code==200
+
+            assert alice.post("/api/people/2/block").status_code==204
+            for account, sender_id in ((alice,1),(bob,2)):
+                listed=account.get("/api/direct/conversations").json()
+                assert any(row["id"]==conversation_id and row["relationship_blocked"] for row in listed)
+                history=account.get(f"/api/direct/conversations/{conversation_id}/messages")
+                assert history.status_code==200 and history.json()[0]["body"]=="Old history stays"
+                assert account.get(f"/api/direct/conversations/{conversation_id}/pinned-messages").json()[0]["id"]==old["id"]
+                denied=account.post(f"/api/direct/conversations/{conversation_id}/messages",json={"body":f"blocked from {sender_id}"})
+                assert denied.status_code==403 and "block" in denied.json()["detail"].lower()
+                search=account.get("/api/people/search?q="+("bob-transition" if sender_id==1 else "alice-transition")).json()
+                assert search and search[0]["relationship"]=="blocked"
+                assert account.post(f"/api/projects/{project['id']}/messages",json={"body":"Group chat still works"}).status_code==201
+            assert alice.get("/api/people/2").json()["can_message"] is False
+            assert alice.get(f"/api/projects/{project['id']}").status_code==200
+
+            assert alice.delete("/api/people/2/block").status_code==204
+            assert any(row["id"]==conversation_id for row in alice.get("/api/direct/conversations").json())
+            assert alice.get("/api/people/search?q=bob-transition").json()[0]["relationship"]=="request_needed"
+            assert alice.post("/api/direct/conversations",json={"recipient_id":2}).status_code==403
+            assert alice.post(f"/api/direct/conversations/{conversation_id}/messages",json={"body":"still disabled"}).status_code==403
+            fresh=alice.post("/api/friend-requests",json={"username":"bob-transition"})
+            assert fresh.status_code==201
+            assert bob.post(f"/api/friend-requests/{fresh.json()['id']}/accept").status_code==200
+            assert alice.post(f"/api/direct/conversations/{conversation_id}/messages",json={"body":"Friendship restored"}).status_code==201
 
 
 def test_direct_message_pins_are_private_and_jumpable_data(tmp_path, monkeypatch):

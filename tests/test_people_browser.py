@@ -20,8 +20,8 @@ def _free_port():
         return sock.getsockname()[1]
 
 
-def _image_bytes():
-    image = Image.new("RGB", (720, 480))
+def _image_bytes(size=(720, 480)):
+    image = Image.new("RGB", size)
     pixels = image.load()
     for x in range(image.width):
         for y in range(image.height):
@@ -143,8 +143,8 @@ def test_join_request_ui_search_profile_photo_and_classmates(tmp_path, monkeypat
             expect(profile).to_contain_text("@owner")
             expect(profile).not_to_contain_text("@example.edu")
             profile.locator(".classmate-profile-bio").get_by_text("No bio added yet.").is_visible()
-            profile.locator('summary[aria-label="More actions for Owner"]').click()
-            expect(profile.get_by_role("button",name="Block classmate")).to_be_visible()
+            expect(profile.locator(".classmate-profile-menu")).to_have_count(0)
+            expect(profile.get_by_role("button",name="Block Owner")).to_be_visible()
             profile.locator(".classmate-profile-avatar").click()
             expect(student_page.locator("#profile-photo-viewer")).to_be_visible()
             student_page.locator(".profile-photo-close").click()
@@ -192,8 +192,16 @@ def test_join_request_ui_search_profile_photo_and_classmates(tmp_path, monkeypat
             student_page.locator(".profile-photo-close").click()
             buffer=_image_bytes()
             student_page.locator("#profile-photo-upload").click()
-            student_page.locator("#profile-photo").set_input_files({"name":"split.png","mimeType":"image/png","buffer":buffer})
+            tall_buffer=_image_bytes((420,900))
+            student_page.locator("#profile-photo").set_input_files({"name":"portrait.png","mimeType":"image/png","buffer":tall_buffer})
             expect(student_page.locator("#profile-photo-editor")).to_be_visible()
+            assert student_page.locator("#photo-crop-canvas").evaluate("el => {const d=el.getContext('2d').getImageData(0,0,el.width,el.height).data;for(let i=3;i<d.length;i+=4)if(d[i]!==255)return false;return true}")
+            student_page.locator("#profile-photo-editor").get_by_role("button",name="Cancel",exact=True).click()
+            buffer=_image_bytes((1200,500))
+            student_page.locator("#profile-photo-upload").click()
+            student_page.locator("#profile-photo").set_input_files({"name":"wide.png","mimeType":"image/png","buffer":buffer})
+            expect(student_page.locator("#photo-crop-canvas")).to_be_visible()
+            assert student_page.locator("#photo-crop-canvas").evaluate("el => {const d=el.getContext('2d').getImageData(0,0,el.width,el.height).data;for(let i=3;i<d.length;i+=4)if(d[i]!==255)return false;return true}")
             student_page.locator("#photo-zoom").fill("1.8")
             crop=student_page.locator("#photo-crop-canvas").bounding_box()
             student_page.mouse.move(crop["x"]+crop["width"]*.6,crop["y"]+crop["height"]*.5)
@@ -207,17 +215,23 @@ def test_join_request_ui_search_profile_photo_and_classmates(tmp_path, monkeypat
             student_page.locator("#photo-zoom").fill("1.5")
             student_page.locator("#photo-crop-confirm").click()
             expect(student_page.locator("#profile-avatar-preview")).to_have_attribute("style", re.compile("blob:"))
+            photo_version_before=student_api.get(f"{base}/api/auth/me").json()["profile_photo_version"]
             student_page.locator("#profile-form").get_by_role("button",name="Save profile").click()
-            expect(student_page.locator("#profile-saved")).to_have_text("Your profile is saved.")
+            expect(student_page.locator("#avatar")).not_to_have_attribute("data-avatar-version",photo_version_before,timeout=15000)
             saved=student_api.get(f"{base}/api/profile/photo")
             assert saved.status==200 and Image.open(io.BytesIO(saved.body())).size==(512,512)
+            original=student_api.get(f"{base}/api/profile/photo/original")
+            assert original.status==200 and Image.open(io.BytesIO(original.body())).size==(1200,500)
+            profile_state=student_api.get(f"{base}/api/auth/me").json()
+            assert profile_state["profile_photo_version"] and profile_state["profile_photo_crop"]
             student_page.locator("#profile-avatar-preview").dblclick()
             expect(student_page.locator("#profile-photo-editor")).to_be_visible()
             student_page.locator("#profile-photo-editor").get_by_role("button",name="Cancel",exact=True).click()
             student_page.locator("#profile-photo-remove").click()
             expect(student_page.locator("#profile-photo-remove")).to_have_text("Photo will be removed")
+            photo_version_before_remove=student_page.locator("#avatar").get_attribute("data-avatar-version")
             student_page.locator("#profile-form").get_by_role("button",name="Save profile").click()
-            expect(student_page.locator("#profile-saved")).to_have_text("Your profile is saved.")
+            expect(student_page.locator("#avatar")).not_to_have_attribute("data-avatar-version",photo_version_before_remove,timeout=15000)
             assert student_api.get(f"{base}/api/profile/photo").status==404
 
             # Verify tab and photo panel fit at all approved viewport sizes and themes.

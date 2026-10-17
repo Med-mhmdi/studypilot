@@ -55,7 +55,7 @@ def initialize() -> None:
                 con.execute("UPDATE users SET username=? WHERE id=?", (candidate, row["id"]))
         con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)")
         user_columns = {row["name"] for row in con.execute("PRAGMA table_info(users)")}
-        for column, definition in (("avatar", "TEXT NOT NULL DEFAULT 'violet'"), ("bio", "TEXT NOT NULL DEFAULT ''"), ("theme", "TEXT NOT NULL DEFAULT 'light'"), ("profile_photo", "TEXT")):
+        for column, definition in (("avatar", "TEXT NOT NULL DEFAULT 'violet'"), ("bio", "TEXT NOT NULL DEFAULT ''"), ("theme", "TEXT NOT NULL DEFAULT 'light'"), ("profile_photo", "TEXT"), ("profile_photo_original", "TEXT"), ("profile_photo_crop", "TEXT"), ("profile_photo_version", "TEXT")):
             if column not in user_columns:
                 con.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
         con.execute("""CREATE TABLE IF NOT EXISTS projects (
@@ -169,6 +169,9 @@ def initialize() -> None:
             CHECK(user_a < user_b),
             UNIQUE(user_a,user_b)
         )""")
+        direct_conversation_columns = {row["name"] for row in con.execute("PRAGMA table_info(direct_conversations)")}
+        if "requires_friendship" not in direct_conversation_columns:
+            con.execute("ALTER TABLE direct_conversations ADD COLUMN requires_friendship INTEGER NOT NULL DEFAULT 0 CHECK(requires_friendship IN (0,1))")
         con.execute("""CREATE TABLE IF NOT EXISTS direct_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             conversation_id INTEGER NOT NULL REFERENCES direct_conversations(id) ON DELETE CASCADE,
