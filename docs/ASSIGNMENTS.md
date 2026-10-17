@@ -28,7 +28,9 @@ FastAPI application ───── SQLite file in persistent data volume
 GitHub push → hosted CI tests → Dell self-hosted runner → Dokku app `studypilot`
 ```
 
-The first version is intentionally single-user and does not include accounts, a shared database, or external services. Give the app a unique Dokku hostname (for a LAN-only demo, `studypilot.test` can map to `192.168.1.105` in the Huawei's hosts file). It listens on the container's port 8000; Dokku routes by hostname through its existing web proxy. Portainer's host port 8000 and the existing demo app on port 80 are left alone.
+The original planner was single-user. The current app adds account registration and login, private personal assignments, shared study groups, roles, invitations, task assignees, comments, project chat, activity, and notifications. SQLite changes are additive: existing task rows are preserved and assigned to the first account registered after the upgrade. All assignment and collaboration APIs now require a signed-in session. Give the app a unique Dokku hostname (for a LAN-only demo, `studypilot.test` can map to `192.168.1.105` in the Huawei's hosts file). It listens on the container's port 8000; Dokku routes by hostname through its existing web proxy. Portainer's host port 8000 and the existing demo app on port 80 are left alone.
+
+Set a persistent random `SESSION_SECRET` in the Dokku app configuration and `COOKIE_SECURE=true` when serving over HTTPS. Back up the existing SQLite file before the first deployment of this upgrade. The automatic migration only adds schema and preserves rows; the first account claims rows with no owner. No deployment or database migration was run from this workspace.
 
 ### Task 1 demo sequence
 
@@ -39,6 +41,8 @@ The first version is intentionally single-user and does not include accounts, a 
 5. Show the passing GitHub Actions test run. Demonstrate deployment after Dell runner and repository settings have been configured.
 
 ## Task 2 — due October 30, 2026
+
+Task 2 observability work is postponed until October 30. The existing observability foundation below was not changed or started as part of the student-collaboration upgrade.
 
 **Goal:** extend the app with OpenTelemetry traces and metrics, Prometheus/Grafana dashboards, Loki log search, and Jaeger trace inspection.
 
