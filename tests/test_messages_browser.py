@@ -1,3 +1,4 @@
+import os
 import re
 import socket
 import threading
@@ -175,6 +176,37 @@ def test_messages_browser_group_direct_reply_unread_and_responsive(tmp_path, mon
             expect(stream.get_by_role("button", name="Jump to latest message")).to_have_count(0)
             expect(stream.locator(".new-messages-divider")).to_be_visible()
 
+            # Editing a group message on its sender's independent session updates the open recipient DOM in place.
+            owner_composer = page.get_by_role("textbox", name="Group message")
+            owner_composer.fill("Keep this group draft")
+            recipient_group_row = page.locator(".message-row").filter(has_text="A new incoming message").last
+            recipient_group_message_id = recipient_group_row.get_attribute("data-message-id")
+            recipient_group_row = page.locator(f'.message-row[data-message-id="{recipient_group_message_id}"]')
+            recipient_group_row.locator(".message-menu summary").click()
+            expect(recipient_group_row.locator(".message-menu-items")).to_be_visible()
+            owner_edit_scroll = stream.evaluate("el => el.scrollTop")
+            sender_group_row = mate_page.locator(".message-row").filter(has_text="A new incoming message").last
+            sender_group_message_id = sender_group_row.get_attribute("data-message-id")
+            sender_group_row = mate_page.locator(f'.message-row[data-message-id="{sender_group_message_id}"]')
+            sender_group_row.locator(".message-menu summary").click()
+            mate_page.get_by_role("button", name="Edit message", exact=True).click()
+            edit_dialog = mate_page.locator("#text-input-dialog")
+            expect(edit_dialog).to_be_visible()
+            edit_dialog.locator("textarea").fill("A group message edited live")
+            edit_dialog.get_by_role("button", name="Save").click()
+            expect(recipient_group_row.locator(".message-bubble")).to_have_text("A group message edited live", timeout=9000)
+            expect(recipient_group_row.locator(".message-meta")).to_contain_text("edited")
+            expect(recipient_group_row.locator(".message-menu-items")).to_be_visible()
+            assert stream.evaluate("el => el.scrollTop") == owner_edit_scroll
+            expect(owner_composer).to_have_value("Keep this group draft")
+            page.keyboard.press("Escape")
+            recipient_group_row.locator(".message-menu summary").click()
+            page.get_by_role("button", name="Pin message", exact=True).click()
+            expect(mate_page.locator(f'.message-row[data-message-id="{sender_group_message_id}"] .pinned-marker')).to_be_visible(timeout=9000)
+            page.locator(f'.message-row[data-message-id="{sender_group_message_id}"] .message-menu summary').click()
+            page.locator(f'.message-row[data-message-id="{sender_group_message_id}"] .message-menu-items').get_by_role("button", name="Unpin message", exact=True).click()
+            expect(mate_page.locator(f'.message-row[data-message-id="{sender_group_message_id}"] .pinned-marker')).to_have_count(0, timeout=9000)
+
             # Direct scope and messages remain separate and searchable within their selected tab.
             page.locator("#conversation-tab-direct").click()
             expect(page.locator(".conversation-item")).to_have_count(1)
@@ -207,8 +239,29 @@ def test_messages_browser_group_direct_reply_unread_and_responsive(tmp_path, mon
             mate_composer.fill("Live direct from Mate")
             mate_page.get_by_role("button", name="Send").click()
             expect(page.locator("#direct-stream .message-bubble").filter(has_text="Live direct from Mate")).to_be_visible(timeout=9000)
+            owner_direct_composer = page.get_by_role("textbox", name="Private message")
+            owner_direct_composer.fill("Keep this direct draft")
+            direct_recipient_row = page.locator(".message-row").filter(has_text="Live direct from Mate").last
+            direct_message_id = direct_recipient_row.get_attribute("data-message-id")
+            direct_recipient_row = page.locator(f'.message-row[data-message-id="{direct_message_id}"]')
+            direct_recipient_row.locator(".message-menu summary").click()
+            expect(direct_recipient_row.locator(".message-menu-items")).to_be_visible()
+            direct_sender_row = mate_page.locator(".message-row").filter(has_text="Live direct from Mate").last
+            direct_message_id = direct_sender_row.get_attribute("data-message-id")
+            direct_sender_row = mate_page.locator(f'.message-row[data-message-id="{direct_message_id}"]')
+            direct_sender_row.locator(".message-menu summary").click()
+            mate_page.get_by_role("button", name="Edit message", exact=True).click()
+            edit_dialog = mate_page.locator("#text-input-dialog")
+            expect(edit_dialog).to_be_visible()
+            edit_dialog.locator("textarea").fill("Live direct edited by Mate")
+            edit_dialog.get_by_role("button", name="Save").click()
+            expect(direct_recipient_row.locator(".message-bubble")).to_have_text("Live direct edited by Mate", timeout=9000)
+            expect(direct_recipient_row.locator(".message-meta")).to_contain_text("edited")
+            expect(direct_recipient_row.locator(".message-menu-items")).to_be_visible()
+            expect(owner_direct_composer).to_have_value("Keep this direct draft")
+            page.keyboard.press("Escape")
             page.locator("#conversation-tab-direct").click()
-            expect(page.locator(".conversation-item").first).to_contain_text("Live direct from Mate")
+            expect(page.locator(".conversation-item").first).to_contain_text("Live direct edited by Mate")
             expect(page.locator(".conversation-item").first.locator(".unread-pill")).to_have_count(0)
             page.locator("#notification-button").click()
             expect(page.locator("#notification-tabs")).to_contain_text("Messages")
@@ -266,7 +319,7 @@ def test_messages_browser_group_direct_reply_unread_and_responsive(tmp_path, mon
             mate_page.get_by_role("button", name="Send").click()
             expect(mate_page.locator("#direct-stream .message-bubble").last).to_have_text("Unread direct batch two")
             expect(page.locator("#message-count")).to_be_visible(timeout=9000)
-            expect(page.locator("#message-count")).to_have_text("3")
+            expect(page.locator("#message-count")).to_have_text("2")
             page.goto(f"{base_url}/#/messages")
             expect(page.locator(".new-messages-divider")).to_be_visible()
             divider = page.locator(".new-messages-divider")
@@ -293,8 +346,8 @@ def test_messages_browser_group_direct_reply_unread_and_responsive(tmp_path, mon
             page.evaluate("showMessage('')")
 
             # Save visual checks at common desktop and phone widths and both themes.
-            screenshot_dir = tmp_path / "screenshots"
-            screenshot_dir.mkdir()
+            screenshot_dir=Path(os.getenv("STUDYPILOT_SCREENSHOT_DIR",str(tmp_path / "screenshots")))
+            screenshot_dir.mkdir(parents=True,exist_ok=True)
             page.evaluate("document.activeElement.blur(); document.querySelector('#app-message').hidden = true")
             for width, theme in ((1280, "light"), (1280, "dark"), (1600, "light"), (1600, "dark"), (390, "light"), (390, "dark")):
                 page.set_viewport_size({"width": width, "height": 900})
@@ -366,6 +419,8 @@ def test_conversation_controls_and_notification_layout_browser(tmp_path, monkeyp
             mate_page.locator("#conversation-tab-direct").click()
             expect(mate_page.locator(".conversation-item strong")).to_have_text("Owner")
 
+            visual_dir=Path(os.getenv("STUDYPILOT_SCREENSHOT_DIR",str(tmp_path / "screenshots")))
+            visual_dir.mkdir(parents=True,exist_ok=True)
             for theme in ("light", "dark"):
                 _ok(owner.request.patch(f"{base_url}/api/profile", data={"name": "Owner", "theme": theme}))
                 page.reload()
@@ -385,7 +440,7 @@ def test_conversation_controls_and_notification_layout_browser(tmp_path, monkeyp
                     assert bounds["left"] >= 0 and bounds["right"] <= bounds["viewport"]
                     assert bounds["pLeft"] >= bounds["left"] and bounds["pRight"] <= bounds["right"]
                     assert abs((bounds["left"] + bounds["right"]) / 2 - width / 2) <= 2
-                    page.screenshot(path=str(tmp_path / f"notifications-{width}-{theme}.png"))
+                    page.screenshot(path=str(visual_dir / f"notifications-{width}-{theme}.png"))
                     dialog.get_by_role("button", name="Close").click()
 
             page.set_viewport_size({"width": 1280, "height": 900})

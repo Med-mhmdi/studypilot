@@ -55,9 +55,15 @@ def initialize() -> None:
                 con.execute("UPDATE users SET username=? WHERE id=?", (candidate, row["id"]))
         con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)")
         user_columns = {row["name"] for row in con.execute("PRAGMA table_info(users)")}
-        for column, definition in (("avatar", "TEXT NOT NULL DEFAULT 'violet'"), ("bio", "TEXT NOT NULL DEFAULT ''"), ("theme", "TEXT NOT NULL DEFAULT 'light'"), ("profile_photo", "TEXT"), ("profile_photo_original", "TEXT"), ("profile_photo_crop", "TEXT"), ("profile_photo_version", "TEXT")):
+        had_avatar_source = "active_avatar_source" in user_columns
+        for column, definition in (("avatar", "TEXT NOT NULL DEFAULT 'violet'"), ("active_avatar_source", "TEXT NOT NULL DEFAULT 'avatar'"), ("bio", "TEXT NOT NULL DEFAULT ''"), ("theme", "TEXT NOT NULL DEFAULT 'light'"), ("profile_photo", "TEXT"), ("profile_photo_original", "TEXT"), ("profile_photo_crop", "TEXT"), ("profile_photo_version", "TEXT")):
             if column not in user_columns:
                 con.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
+        # Keep existing saved photos active during migration; new accounts start with their illustration.
+        if not had_avatar_source:
+            con.execute("UPDATE users SET active_avatar_source=CASE WHEN profile_photo IS NOT NULL THEN 'photo' ELSE 'avatar' END")
+        else:
+            con.execute("UPDATE users SET active_avatar_source='avatar' WHERE active_avatar_source IS NULL OR active_avatar_source NOT IN ('photo','avatar')")
         con.execute("""CREATE TABLE IF NOT EXISTS projects (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 120),
@@ -181,11 +187,18 @@ def initialize() -> None:
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
         )""")
         direct_columns = {row["name"] for row in con.execute("PRAGMA table_info(direct_messages)")}
+        if "updated_at" not in direct_columns:
+            con.execute("ALTER TABLE direct_messages ADD COLUMN updated_at TEXT")
+            con.execute("UPDATE direct_messages SET updated_at=created_at WHERE updated_at IS NULL")
         if "edited_at" not in direct_columns: con.execute("ALTER TABLE direct_messages ADD COLUMN edited_at TEXT")
         if "deleted_at" not in direct_columns: con.execute("ALTER TABLE direct_messages ADD COLUMN deleted_at TEXT")
         if "pinned_at" not in direct_columns: con.execute("ALTER TABLE direct_messages ADD COLUMN pinned_at TEXT")
         if "pinned_by" not in direct_columns: con.execute("ALTER TABLE direct_messages ADD COLUMN pinned_by INTEGER REFERENCES users(id) ON DELETE SET NULL")
         if "reply_to_id" not in direct_columns: con.execute("ALTER TABLE direct_messages ADD COLUMN reply_to_id INTEGER REFERENCES direct_messages(id) ON DELETE SET NULL")
+        con.execute("""CREATE TRIGGER IF NOT EXISTS trg_direct_message_updated_at_insert AFTER INSERT ON direct_messages
+            WHEN NEW.updated_at IS NULL BEGIN UPDATE direct_messages SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=NEW.id; END""")
+        con.execute("""CREATE TRIGGER IF NOT EXISTS trg_direct_message_updated_at_update AFTER UPDATE ON direct_messages
+            WHEN NEW.updated_at IS OLD.updated_at BEGIN UPDATE direct_messages SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=NEW.id; END""")
         con.execute("""CREATE TABLE IF NOT EXISTS activity (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
@@ -232,6 +245,9 @@ def initialize() -> None:
             changed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
         )""")
         message_columns = {row["name"] for row in con.execute("PRAGMA table_info(messages)")}
+        if "updated_at" not in message_columns:
+            con.execute("ALTER TABLE messages ADD COLUMN updated_at TEXT")
+            con.execute("UPDATE messages SET updated_at=created_at WHERE updated_at IS NULL")
         if "edited_at" not in message_columns:
             con.execute("ALTER TABLE messages ADD COLUMN edited_at TEXT")
         if "pinned_at" not in message_columns:
@@ -242,6 +258,10 @@ def initialize() -> None:
             con.execute("ALTER TABLE messages ADD COLUMN deleted_at TEXT")
         if "reply_to_id" not in message_columns:
             con.execute("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER REFERENCES messages(id) ON DELETE SET NULL")
+        con.execute("""CREATE TRIGGER IF NOT EXISTS trg_message_updated_at_insert AFTER INSERT ON messages
+            WHEN NEW.updated_at IS NULL BEGIN UPDATE messages SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=NEW.id; END""")
+        con.execute("""CREATE TRIGGER IF NOT EXISTS trg_message_updated_at_update AFTER UPDATE ON messages
+            WHEN NEW.updated_at IS OLD.updated_at BEGIN UPDATE messages SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=NEW.id; END""")
         con.execute("""CREATE TABLE IF NOT EXISTS task_assignees (
             task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

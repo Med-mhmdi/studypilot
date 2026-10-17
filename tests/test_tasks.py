@@ -168,7 +168,7 @@ def test_direct_messages_are_private_to_shared_group_participants(tmp_path, monk
             register(ben, "ben@example.edu", "Ben")
             join_group(alice, ben, project)
             contacts = ben.get("/api/people").json()
-            assert contacts == [{"id": 1, "name": "Alice", "username": "alice", "avatar": "violet", "profile_photo": None, "profile_photo_version": None}]
+            assert contacts == [{"id": 1, "name": "Alice", "username": "alice", "avatar": "violet", "profile_photo": None, "profile_photo_version": None, "active_avatar_source":"avatar"}]
             group_search = ben.get("/api/people/search?q=alice").json()
             assert group_search[0]["relationship"] == "group_classmate"
             conversation = ben.post("/api/direct/conversations", json={"recipient_id": 1})
@@ -207,6 +207,28 @@ def test_additive_migration_preserves_legacy_rows(tmp_path, monkeypatch):
         assert len(tasks) == 1 and tasks[0]["title"] == "Legacy essay" and tasks[0]["owner_id"] == user["id"]
 
 
+def test_photo_and_message_sync_migration_preserves_existing_data(tmp_path, monkeypatch):
+    path=tmp_path / "avatar-message-migration.db"
+    con=sqlite3.connect(path)
+    con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL, avatar TEXT NOT NULL DEFAULT 'violet', profile_photo TEXT)")
+    con.execute("INSERT INTO users(id,email,name,password_hash,created_at,profile_photo) VALUES(1,'legacy@example.edu','Legacy','hash','old-user-created','legacy.webp')")
+    con.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, user_id INTEGER NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL)")
+    con.execute("INSERT INTO messages VALUES(1,1,1,'Keep this group message','old-message-created')")
+    con.execute("CREATE TABLE direct_messages (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, sender_id INTEGER NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL)")
+    con.execute("INSERT INTO direct_messages VALUES(1,1,1,'Keep this direct message','old-direct-created')")
+    con.commit();con.close()
+    with client_for(path,monkeypatch) as client:
+        assert client.get("/health").status_code==200
+        con=sqlite3.connect(path)
+        user=con.execute("SELECT profile_photo,active_avatar_source FROM users WHERE id=1").fetchone()
+        group_message=con.execute("SELECT body,created_at,updated_at FROM messages WHERE id=1").fetchone()
+        direct_message=con.execute("SELECT body,created_at,updated_at FROM direct_messages WHERE id=1").fetchone()
+        con.close()
+        assert user==("legacy.webp","photo")
+        assert group_message==("Keep this group message","old-message-created","old-message-created")
+        assert direct_message==("Keep this direct message","old-direct-created","old-direct-created")
+
+
 def test_homepage_is_served(tmp_path, monkeypatch):
     with client_for(tmp_path / "planner.db", monkeypatch) as client:
         response = client.get("/")
@@ -240,7 +262,7 @@ def test_username_friend_request_accept_block_and_private_access(tmp_path, monke
         with TestClient(app) as bob:
             register(bob, "bobby@example.edu", "Bobby")
             search = alice.get("/api/people/search?q=bob").json()
-            assert search == [{"id": 2, "name": "Bobby", "username": "bobby", "avatar": "violet", "profile_photo": None, "profile_photo_version": None, "relationship": "not_connected"}]
+            assert search == [{"id": 2, "name": "Bobby", "username": "bobby", "avatar": "violet", "profile_photo": None, "profile_photo_version": None, "active_avatar_source":"avatar", "relationship": "not_connected"}]
             assert alice.get("/api/people/search?q=%%%").json() == []
             assert "email" not in search[0]
             assert alice.patch("/api/profile", json={"name": "Alice", "username": "BOBBY"}).status_code == 409
@@ -341,7 +363,7 @@ def test_group_join_request_history_withdrawal_admin_scope_and_status(tmp_path, 
             first = student.post("/api/projects/join-requests", json={"code":chemistry["join_code"]})
             assert first.status_code == 202 and first.json()["status"] == "pending"
             again = student.post("/api/projects/join-requests", json={"code":chemistry["join_code"]})
-            assert again.json() == first.json()
+            assert again.json() == {**first.json(),"created":False}
             mine = student.get("/api/my/group-join-requests").json()
             assert len(mine) == 1 and mine[0]["project_name"] == "Chemistry Circle" and mine[0]["project_avatar"] == "mint"
             assert mine[0]["status"] == "pending" and mine[0]["created_at"]
@@ -386,8 +408,9 @@ def test_classmate_profile_privacy_block_unblock_and_photo_removal(tmp_path, mon
             assert bob.post(f"/api/friend-requests/{sent.json()['id']}/accept").status_code == 200
             profile = alice.get("/api/people/2")
             assert profile.status_code == 200
-            assert profile.json() == {"id":2,"name":"Bob","username":"bob-profile","avatar":"violet","bio":"","profile_photo":False,"profile_photo_version":None,"relationship":"friends","blocked":False,"needs_friend_request":False,"can_message":True}
-            assert "email" not in profile.json() and stranger.get("/api/people/2").status_code == 404
+            assert profile.json() == {"id":2,"name":"Bob","username":"bob-profile","avatar":"violet","active_avatar_source":"avatar","bio":"","profile_photo":False,"profile_photo_version":None,"relationship":"friends","blocked":False,"needs_friend_request":False,"can_message":True}
+            public_profile=stranger.get("/api/people/2")
+            assert public_profile.status_code==200 and public_profile.json()["relationship"]=="not_connected" and "email" not in public_profile.json()
             conversation = alice.post("/api/direct/conversations", json={"recipient_id":2}).json()
             assert alice.post(f"/api/direct/conversations/{conversation['id']}/messages", json={"body":"hello"}).status_code == 201
             assert alice.post("/api/people/2/block").status_code == 204
@@ -748,7 +771,7 @@ def test_profile_photo_is_reencoded_and_svg_or_invalid_images_are_rejected(tmp_p
             assert peer_photo.status_code == 200 and peer_photo.headers["content-type"] == "image/webp"
         with TestClient(app) as stranger:
             register(stranger,"stranger@example.edu","Stranger")
-            assert stranger.get("/api/people/1/photo").status_code == 404
+            assert stranger.get("/api/people/1/photo").status_code == 200
 
 
 def test_profile_preferences_friend_cancel_and_notifications(tmp_path, monkeypatch):

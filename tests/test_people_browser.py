@@ -1,4 +1,5 @@
 import io
+import os
 import re
 import socket
 import threading
@@ -52,6 +53,8 @@ def test_join_request_ui_search_profile_photo_and_classmates(tmp_path, monkeypat
         with urllib.request.urlopen(f"{base}/health", timeout=3) as response:
             assert response.status == 200
 
+        screenshot_dir=Path(os.getenv("STUDYPILOT_SCREENSHOT_DIR",str(tmp_path / "screenshots")))
+        screenshot_dir.mkdir(parents=True,exist_ok=True)
         with sync_playwright() as automation:
             launch_options = {}
             chrome = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
@@ -108,6 +111,33 @@ def test_join_request_ui_search_profile_photo_and_classmates(tmp_path, monkeypat
             student_page.locator("#join-form").get_by_role("button",name="Request to join").click()
             admin_page=admin.new_page()
             admin_page.goto(f"{base}/#/groups")
+            screenshot_dir.mkdir(parents=True,exist_ok=True)
+            expect(admin_page.locator(".project-card").first).to_be_visible()
+            expect(admin_page.locator("dialog[open]")).to_have_count(0)
+            expect(admin_page.locator("#profile-photo-viewer")).not_to_be_visible()
+            for width in (1280,1600,390):
+                admin_page.set_viewport_size({"width":width,"height":844 if width==390 else 900})
+                for theme in ("light","dark"):
+                    admin_page.evaluate("theme => document.documentElement.dataset.theme=theme",theme)
+                    admin_page.screenshot(path=str(screenshot_dir/f"groups-listing-{width}-{theme}.png"),full_page=False)
+            admin_page.set_viewport_size({"width":1280,"height":900})
+            admin_page.evaluate("document.documentElement.dataset.theme='light'")
+            admin_page.locator(".project-card").filter(has_text="Chemistry Circle").click()
+            expect(admin_page.locator(".group-requests-button")).to_be_visible()
+            expect(admin_page.locator("#group-join-requests")).to_have_count(1)
+            action_row=admin_page.locator(".group-hero-actions")
+            action_buttons=action_row.locator(":scope > :is(button,a)")
+            assert action_buttons.count()>=3
+            y_centers=action_row.evaluate("el=>[...el.querySelectorAll(':scope > button, :scope > a, :scope > details > summary')].map(button=>{const r=button.getBoundingClientRect();return r.top+r.height/2})")
+            assert max(y_centers)-min(y_centers)<=2
+            for width,theme in ((1280,"light"),(1280,"dark"),(1600,"light"),(1600,"dark"),(390,"light"),(390,"dark")):
+                admin_page.set_viewport_size({"width":width,"height":844 if width==390 else 900})
+                admin_page.evaluate("theme => document.documentElement.dataset.theme=theme",theme)
+                bounds=action_row.evaluate("el=>{const r=el.getBoundingClientRect();return {left:r.left,right:r.right,scroll:el.scrollWidth,client:el.clientWidth}}")
+                assert bounds["left"]>=0 and bounds["right"]<=width and bounds["scroll"]<=bounds["client"]+1
+                admin_page.screenshot(path=str(screenshot_dir/f"group-workspace-{width}-{theme}.png"),full_page=False)
+            admin_page.set_viewport_size({"width":1280,"height":900})
+            admin_page.goto(f"{base}/#/groups")
             expect(admin_page.locator(".project-request-badge")).to_contain_text("1 join request")
             admin_page.locator(".project-request-badge").click()
             expect(admin_page.locator("#join-requests-dialog")).to_be_visible()
@@ -156,6 +186,34 @@ def test_join_request_ui_search_profile_photo_and_classmates(tmp_path, monkeypat
             expect(student_page.locator("#people-results")).to_be_empty()
             student_page.locator("#friend-search-form").get_by_role("button",name="Search").click()
             expect(student_page.locator("#people-results .person-card")).to_have_count(1)
+            search.fill("stranger")
+            student_page.locator("#friend-search-form").get_by_role("button",name="Search").click()
+            stranger_card=student_page.locator("#people-results .person-card").filter(has_text="Stranger")
+            expect(stranger_card).to_be_visible()
+            stranger_card.locator(".profile-name-trigger").click()
+            public_profile=student_page.locator("#classmate-profile-dialog")
+            expect(public_profile).to_be_visible()
+            expect(public_profile).to_contain_text("@stranger")
+            expect(public_profile).not_to_contain_text("@example.edu")
+            expect(public_profile).to_contain_text("Add this classmate to message")
+            public_profile.get_by_role("button",name="Close").click()
+            search.fill("stranger")
+            student_page.locator("#friend-search-form").get_by_role("button",name="Search").click()
+            stranger_card=student_page.locator("#people-results .person-card").filter(has_text="Stranger")
+            stranger_card.get_by_role("button",name="Add classmate").click()
+            expect(search).to_have_value("")
+            expect(student_page.locator("#people-results")).to_be_empty()
+            expect(student_page.locator("#friend-search-note")).to_have_text("Request sent to @stranger.")
+            search.fill("stranger")
+            student_page.locator("#friend-search-form").get_by_role("button",name="Search").click()
+            cancel_request=student_page.locator("#people-results .person-card").get_by_role("button",name="Cancel request")
+            expect(cancel_request).to_be_visible()
+            assert cancel_request.evaluate("el=>getComputedStyle(el).color") in ("rgb(162, 63, 75)","rgb(180, 66, 77)")
+            student_page.set_viewport_size({"width":390,"height":844})
+            assert cancel_request.evaluate("el=>{const r=el.getBoundingClientRect();return r.width===42&&r.height===42&&el.getAttribute('aria-label')==='Cancel request'&&!!el.querySelector('svg')}")
+            cancel_request.click()
+            expect(student_page.locator("#people-tabs .people-tab").filter(has_text="Outgoing").locator("strong")).to_have_text("0")
+            student_page.set_viewport_size({"width":1280,"height":900})
             search.fill("unknown-person")
             expect(student_page.locator("#people-results")).to_be_empty()
             student_page.locator("#friend-search-form").get_by_role("button",name="Search").click()
@@ -168,6 +226,16 @@ def test_join_request_ui_search_profile_photo_and_classmates(tmp_path, monkeypat
             friends_tab=student_page.locator("#people-tabs").get_by_role("button",name="Friends 1")
             if friends_tab.get_attribute("aria-expanded") != "true":
                 friends_tab.click()
+            friend_actions=student_page.locator("#people-panel-list .person-card .classmate-action-button")
+            friend_action_metrics=friend_actions.evaluate_all("els=>els.map(el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return {width:r.width,height:r.height,font:s.fontSize,weight:s.fontWeight,radius:s.borderRadius}})")
+            assert len(friend_action_metrics)==2 and all(abs(metrics["height"]-38)<0.1 for metrics in friend_action_metrics)
+            assert friend_action_metrics[0]["font"]==friend_action_metrics[1]["font"] and friend_action_metrics[0]["weight"]==friend_action_metrics[1]["weight"]
+            search_metrics=student_page.locator("#friend-search-form button").evaluate("el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return {width:r.width,height:r.height,cssHeight:s.height,svg:!!el.querySelector('svg'),label:el.getAttribute('aria-label')}}")
+            assert abs(search_metrics["height"]-38)<0.1 and search_metrics["svg"] and search_metrics["label"]=="Search", search_metrics
+            student_page.set_viewport_size({"width":390,"height":844})
+            mobile_action_metrics=[action.evaluate("el=>{const r=el.getBoundingClientRect();return {width:r.width,height:r.height,svg:!!el.querySelector('svg'),label:el.getAttribute('aria-label'),spans:[...el.children].filter(child=>child.tagName==='SPAN').length}}") for action in [friend_actions.nth(0),friend_actions.nth(1),student_page.locator("#friend-search-form button")]]
+            assert all(abs(item["width"]-42)<0.1 and abs(item["height"]-42)<0.1 and item["svg"] and item["spans"] for item in mobile_action_metrics), mobile_action_metrics
+            student_page.set_viewport_size({"width":1280,"height":900})
             for theme in ("light","dark"):
                 student_page.evaluate("theme => document.documentElement.dataset.theme=theme",theme)
                 active=student_page.locator('#people-tabs .people-tab[aria-expanded="true"]')
@@ -224,15 +292,45 @@ def test_join_request_ui_search_profile_photo_and_classmates(tmp_path, monkeypat
             assert original.status==200 and Image.open(io.BytesIO(original.body())).size==(1200,500)
             profile_state=student_api.get(f"{base}/api/auth/me").json()
             assert profile_state["profile_photo_version"] and profile_state["profile_photo_crop"]
+            assert profile_state["active_avatar_source"]=="photo"
+            student_page.locator("#profile-dialog button[data-close='profile-dialog']").last.click()
+            student_page.locator("#account-button").click()
+            student_page.locator("#settings-open").click()
+            student_page.locator('.avatar-picker[data-picker="person"] .avatar-choice[aria-label="Jordan"]').click()
+            expect(student_page.locator("#avatar")).to_have_attribute("data-avatar-source","avatar")
+            assert student_api.get(f"{base}/api/profile/photo").status==200
+            student_page.locator("#settings-dialog button[data-close='settings-dialog']").last.click()
+            student_page.locator("#account-button").click()
+            student_page.locator("#profile-open").click()
+            student_page.locator("#profile-photo-view").click()
+            expect(student_page.locator("#profile-photo-large")).to_be_hidden()
+            expect(student_page.locator("#profile-avatar-large")).to_be_visible()
+            student_page.locator(".profile-photo-close").click()
+            student_page.locator("#profile-dialog button[data-close='profile-dialog']").last.click()
+            student_page.locator("#account-button").click()
+            student_page.locator("#settings-open").click()
+            photo_state=student_api.get(f"{base}/api/auth/me").json()
+            assert photo_state["profile_photo"]
+            expect(student_page.locator("#use-saved-profile-photo")).to_be_visible()
+            student_page.locator("#use-saved-profile-photo").click()
+            expect(student_page.locator("#avatar")).to_have_attribute("data-avatar-source","photo")
+            student_page.locator("#settings-dialog button[data-close='settings-dialog']").last.click()
+            student_page.locator("#account-button").click()
+            student_page.locator("#profile-open").click()
             student_page.locator("#profile-avatar-preview").dblclick()
             expect(student_page.locator("#profile-photo-editor")).to_be_visible()
             student_page.locator("#profile-photo-editor").get_by_role("button",name="Cancel",exact=True).click()
             student_page.locator("#profile-photo-remove").click()
-            expect(student_page.locator("#profile-photo-remove")).to_have_text("Photo will be removed")
-            photo_version_before_remove=student_page.locator("#avatar").get_attribute("data-avatar-version")
-            student_page.locator("#profile-form").get_by_role("button",name="Save profile").click()
-            expect(student_page.locator("#avatar")).not_to_have_attribute("data-avatar-version",photo_version_before_remove,timeout=15000)
+            confirm=student_page.locator("#action-confirm-dialog")
+            expect(confirm).to_be_visible()
+            expect(confirm).to_contain_text("permanently remove your uploaded photo")
+            confirm.get_by_role("button",name="Cancel").click()
+            assert student_api.get(f"{base}/api/profile/photo").status==200
+            student_page.locator("#profile-photo-remove").click()
+            confirm.get_by_role("button",name="Remove photo").click()
+            expect(student_page.locator("#profile-saved")).to_contain_text("Your illustrated avatar is active.")
             assert student_api.get(f"{base}/api/profile/photo").status==404
+            assert student_api.get(f"{base}/api/auth/me").json()["active_avatar_source"]=="avatar"
 
             # Verify tab and photo panel fit at all approved viewport sizes and themes.
             for width,theme in ((1280,"light"),(1280,"dark"),(1600,"light"),(1600,"dark"),(390,"light"),(390,"dark")):
@@ -243,7 +341,11 @@ def test_join_request_ui_search_profile_photo_and_classmates(tmp_path, monkeypat
                     student_page.locator("#profile-open").click()
                 box=student_page.locator("#profile-dialog").evaluate("el => {const r=el.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width,scroll:el.scrollWidth,client:el.clientWidth};}")
                 assert box["left"]>=0 and box["right"]<=width and box["scroll"]<=box["client"]+1
-                student_page.screenshot(path=str(tmp_path/f"profile-{width}-{theme}.png"))
+                action_metrics=student_page.locator(".profile-photo-actions button").evaluate_all("els=>els.map(el=>{const r=el.getBoundingClientRect();return {width:r.width,height:r.height,label:el.getAttribute('aria-label')}})")
+                assert len(action_metrics)==4 and len({(item["width"],item["height"]) for item in action_metrics})==1
+                assert [item["label"] for item in action_metrics]==["View","Edit","Upload Photo","Remove Photo"]
+                assert all(abs(item["height"]-(44 if width==390 else 36))<=1 for item in action_metrics)
+                student_page.screenshot(path=str(screenshot_dir/f"profile-{width}-{theme}.png"))
                 student_page.locator('#profile-dialog button[data-close="profile-dialog"]').last.click()
     finally:
         server.should_exit=True

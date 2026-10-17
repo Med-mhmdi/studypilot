@@ -24,6 +24,7 @@ class ProfileUpdate(RequestModel):
     name: str = Field(min_length=1, max_length=80)
     username: str | None = Field(default=None, min_length=3, max_length=24, pattern=r"^[A-Za-z0-9._-]+$")
     avatar: str | None = Field(default=None, pattern=r"^(violet|ocean|mint|coral|sun)$")
+    active_avatar_source: str | None = Field(default=None, pattern=r"^(photo|avatar)$")
     bio: str | None = Field(default=None, max_length=160)
     theme: str | None = Field(default=None, pattern=r"^(light|dark)$")
 

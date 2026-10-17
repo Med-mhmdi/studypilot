@@ -83,7 +83,7 @@ def current_user(request: Request) -> dict:
     if not user_id:
         raise HTTPException(status_code=401, detail="sign in to continue")
     with db.connect() as con:
-        row = con.execute("SELECT id,email,name,username,created_at,avatar,bio,theme,profile_photo,profile_photo_version,profile_photo_crop FROM users WHERE id=?", (user_id,)).fetchone()
+        row = con.execute("SELECT id,email,name,username,created_at,avatar,active_avatar_source,bio,theme,profile_photo,profile_photo_version,profile_photo_crop FROM users WHERE id=?", (user_id,)).fetchone()
     if row is None:
         request.session.clear()
         raise HTTPException(status_code=401, detail="sign in to continue")
@@ -111,7 +111,7 @@ def _verify_password(password: str, encoded: str) -> bool:
 
 
 def _profile(row: sqlite3.Row) -> dict:
-    return {"id": row["id"], "email": row["email"], "username": row["username"], "name": row["name"], "created_at": row["created_at"], "avatar": row["avatar"], "profile_photo": bool(row["profile_photo"]), "profile_photo_version": row["profile_photo_version"], "profile_photo_crop": row["profile_photo_crop"], "bio": row["bio"], "theme": row["theme"]}
+    return {"id": row["id"], "email": row["email"], "username": row["username"], "name": row["name"], "created_at": row["created_at"], "avatar": row["avatar"], "active_avatar_source": row["active_avatar_source"], "profile_photo": bool(row["profile_photo"]), "profile_photo_version": row["profile_photo_version"], "profile_photo_crop": row["profile_photo_crop"], "bio": row["bio"], "theme": row["theme"]}
 
 
 def _membership(con: sqlite3.Connection, project_id: int, user_id: int) -> sqlite3.Row:
@@ -150,7 +150,7 @@ def _task_access(con: sqlite3.Connection, task_id: int, user_id: int, write: boo
 def _task_json(con: sqlite3.Connection, row: sqlite3.Row) -> dict:
     task = db.row_to_task(row)
     task["assignees"] = [dict(item) for item in con.execute(
-        "SELECT u.id,u.name,u.username,u.avatar,u.profile_photo,u.profile_photo_version FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=? ORDER BY u.name", (row["id"],)
+        "SELECT u.id,u.name,u.username,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=? ORDER BY u.name", (row["id"],)
     ).fetchall()]
     return task
 
@@ -223,9 +223,11 @@ def update_profile(body: ProfileUpdate, user: User):
         try:
             changes = {"name": name}
             if username is not None: changes["username"] = username
-            for key in ("avatar", "bio", "theme"):
+            for key in ("avatar", "active_avatar_source", "bio", "theme"):
                 value = getattr(body, key)
                 if value is not None: changes[key] = value.strip() if key == "bio" else value
+            if body.avatar is not None and body.active_avatar_source is None:
+                changes["active_avatar_source"] = "avatar"
             con.execute("UPDATE users SET " + ",".join(f"{key}=?" for key in changes) + " WHERE id=?", [*changes.values(), user["id"]])
         except sqlite3.IntegrityError as exc:
             raise HTTPException(status_code=409, detail="that username is already taken") from exc
@@ -302,7 +304,7 @@ async def upload_profile_photo(user: User, photo: UploadFile = File(...), origin
             os.chmod(folder / original_filename, 0o600)
     with db.connect() as con:
         previous = con.execute("SELECT profile_photo,profile_photo_original FROM users WHERE id=?", (user["id"],)).fetchone()
-        con.execute("UPDATE users SET profile_photo=?,profile_photo_original=?,profile_photo_version=?,profile_photo_crop=? WHERE id=?", (filename,original_filename,secrets.token_urlsafe(12),crop_settings,user["id"]))
+        con.execute("UPDATE users SET profile_photo=?,profile_photo_original=?,profile_photo_version=?,profile_photo_crop=?,active_avatar_source='photo' WHERE id=?", (filename,original_filename,secrets.token_urlsafe(12),crop_settings,user["id"]))
     if previous:
         for old in previous:
             if old and Path(old).name == old:
@@ -345,7 +347,7 @@ def delete_profile_photo(user: User):
     with db.connect() as con:
         row = con.execute("SELECT profile_photo,profile_photo_original FROM users WHERE id=?", (user["id"],)).fetchone()
         filenames = [row["profile_photo"],row["profile_photo_original"]] if row else []
-        con.execute("UPDATE users SET profile_photo=NULL,profile_photo_original=NULL,profile_photo_crop=NULL,profile_photo_version=NULL WHERE id=?", (user["id"],))
+        con.execute("UPDATE users SET profile_photo=NULL,profile_photo_original=NULL,profile_photo_crop=NULL,profile_photo_version=NULL,active_avatar_source='avatar' WHERE id=?", (user["id"],))
     for filename in filenames:
         if filename and Path(filename).name == filename:
             (db.database_path().parent / "profile-photos" / filename).unlink(missing_ok=True)
@@ -488,17 +490,17 @@ def request_group_membership(body: JoinCodeSubmit, user: User, request: Request)
         if con.execute("SELECT 1 FROM project_members WHERE project_id=? AND user_id=?", (project["id"], user["id"])).fetchone():
             return {"status": "already_member"}
         existing = con.execute("SELECT id,status FROM project_join_requests WHERE project_id=? AND user_id=? ORDER BY id DESC LIMIT 1", (project["id"], user["id"])).fetchone()
-        if existing and existing["status"] == "pending": return {"status": "pending", "request_id": existing["id"]}
+        if existing and existing["status"] == "pending": return {"status": "pending", "created": False, "request_id": existing["id"]}
         if existing and existing["status"] == "blocked": raise HTTPException(status_code=403, detail="you cannot request access to this group")
         try:
             cur = con.execute("INSERT INTO project_join_requests(project_id,user_id) VALUES(?,?)", (project["id"], user["id"]))
         except sqlite3.IntegrityError:
             pending = con.execute("SELECT id FROM project_join_requests WHERE project_id=? AND user_id=? AND status='pending'", (project["id"], user["id"])).fetchone()
             if pending:
-                return {"status": "pending", "request_id": pending["id"]}
+                return {"status": "pending", "created": False, "request_id": pending["id"]}
             raise HTTPException(status_code=409, detail="a request for this group is already being processed")
         con.execute("INSERT INTO notifications(user_id,project_id,actor_id,kind,detail) VALUES(?,?,?,'group_join_request',?)", (project["created_by"], project["id"], user["id"], f'A classmate asked to join “{project["name"]}”.'))
-        return {"status": "pending", "request_id": cur.lastrowid}
+        return {"status": "pending", "created": True, "request_id": cur.lastrowid}
 
 
 @app.get("/api/my/group-join-requests")
@@ -544,7 +546,7 @@ def rotate_join_code(project_id: int, user: User):
 def list_group_join_requests(project_id: int, user: User):
     with db.connect() as con:
         if _membership(con, project_id, user["id"])["role"] not in {"owner", "admin"}: raise HTTPException(status_code=403, detail="admin access is required to review requests")
-        return [dict(r) for r in con.execute("""SELECT r.id,r.status,r.created_at,u.id user_id,u.name,u.username,u.avatar,u.profile_photo,u.profile_photo_version,p.name project_name,p.avatar project_avatar
+        return [dict(r) for r in con.execute("""SELECT r.id,r.status,r.created_at,u.id user_id,u.name,u.username,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source,p.name project_name,p.avatar project_avatar
             FROM project_join_requests r JOIN users u ON u.id=r.user_id JOIN projects p ON p.id=r.project_id
             WHERE r.project_id=? AND r.status='pending' ORDER BY r.created_at""", (project_id,)).fetchall()]
 
@@ -572,7 +574,7 @@ def pinned_messages(project_id: int, user: User):
     with db.connect() as con:
         _membership(con, project_id, user["id"])
         state=con.execute("SELECT cleared_through_id FROM conversation_user_state WHERE user_id=? AND conversation_type='group' AND conversation_id=?",(user["id"],project_id)).fetchone();cutoff=int(state["cleared_through_id"] if state else 0)
-        return [dict(r) for r in con.execute("SELECT m.id,m.body,m.created_at,m.edited_at,m.deleted_at,m.user_id,u.name,u.username,u.avatar,u.profile_photo,u.profile_photo_version FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.id>? AND m.pinned_at IS NOT NULL ORDER BY m.pinned_at DESC", (project_id,cutoff)).fetchall()]
+        return [dict(r) for r in con.execute("SELECT m.id,m.body,m.created_at,m.edited_at,m.deleted_at,m.user_id,u.name,u.username,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.id>? AND m.pinned_at IS NOT NULL ORDER BY m.pinned_at DESC", (project_id,cutoff)).fetchall()]
 
 
 @app.get("/api/projects/{project_id}/messages/{message_id}")
@@ -580,7 +582,7 @@ def get_group_message(project_id: int, message_id: int, user: User):
     with db.connect() as con:
         _membership(con, project_id, user["id"])
         state=con.execute("SELECT cleared_through_id FROM conversation_user_state WHERE user_id=? AND conversation_type='group' AND conversation_id=?",(user["id"],project_id)).fetchone();cutoff=int(state["cleared_through_id"] if state else 0)
-        row=con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,u.id user_id,u.name,u.avatar,u.profile_photo,u.profile_photo_version FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.id>? AND m.id=?",(project_id,cutoff,message_id)).fetchone()
+        row=con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,u.id user_id,u.name,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source FROM messages m JOIN users u ON u.id=m.user_id WHERE m.project_id=? AND m.id>? AND m.id=?",(project_id,cutoff,message_id)).fetchone()
         if row is None: raise HTTPException(status_code=404, detail="message not found")
         return dict(row)
 
@@ -610,7 +612,7 @@ def get_project(project_id: int, user: User):
         project = dict(con.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
         project["role"] = membership["role"]
         project["pending_join_request_count"] = con.execute("SELECT COUNT(*) FROM project_join_requests WHERE project_id=? AND status='pending'", (project_id,)).fetchone()[0] if membership["role"] in {"owner","admin"} else 0
-        project["members"] = [dict(row) for row in con.execute("SELECT u.id,u.name,u.username,u.avatar,u.profile_photo,u.profile_photo_version,COALESCE(m.role_v6,CASE m.role WHEN 'owner' THEN 'owner' ELSE 'student' END) AS role,m.legacy_readonly,m.joined_at FROM project_members m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY CASE COALESCE(m.role_v6,m.role) WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,u.name", (project_id,)).fetchall()]
+        project["members"] = [dict(row) for row in con.execute("SELECT u.id,u.name,u.username,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source,COALESCE(m.role_v6,CASE m.role WHEN 'owner' THEN 'owner' ELSE 'student' END) AS role,m.legacy_readonly,m.joined_at FROM project_members m JOIN users u ON u.id=m.user_id WHERE m.project_id=? ORDER BY CASE COALESCE(m.role_v6,m.role) WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,u.name", (project_id,)).fetchall()]
         return project
 
 
@@ -833,7 +835,7 @@ def delete_comment(task_id: int, comment_id: int, user: User):
 
 
 @app.get("/api/projects/{project_id}/messages")
-def list_messages(project_id: int, user: User, after_id: int = Query(default=0, ge=0), mark_read: bool = Query(default=False)):
+def list_messages(project_id: int, user: User, response: Response, after_id: int = Query(default=0, ge=0), updated_after: str | None = Query(default=None, max_length=40), mark_read: bool = Query(default=False)):
     with db.connect() as con:
         _membership(con, project_id, user["id"])
         state = con.execute("SELECT cleared_through_id FROM conversation_user_state WHERE user_id=? AND conversation_type='group' AND conversation_id=?", (user["id"],project_id)).fetchone()
@@ -842,11 +844,14 @@ def list_messages(project_id: int, user: User, after_id: int = Query(default=0, 
             latest = con.execute("SELECT COALESCE(MAX(id),0) FROM messages WHERE project_id=?", (project_id,)).fetchone()[0]
             con.execute("INSERT INTO group_message_reads(project_id,user_id,last_read_message_id) VALUES(?,?,?) ON CONFLICT(project_id,user_id) DO UPDATE SET last_read_message_id=MAX(last_read_message_id,excluded.last_read_message_id)", (project_id,user["id"],latest))
             con.execute("UPDATE conversation_user_state SET unread_override=0 WHERE user_id=? AND conversation_type='group' AND conversation_id=?", (user["id"],project_id))
-        if after_id:
-            rows = con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.id AS user_id,u.name,u.avatar,u.profile_photo,u.profile_photo_version FROM messages m JOIN users u ON u.id=m.user_id LEFT JOIN messages reply ON reply.id=m.reply_to_id AND reply.project_id=m.project_id AND reply.id>? WHERE m.project_id=? AND m.id>? ORDER BY m.id LIMIT 100", (cutoff,project_id, max(after_id,cutoff))).fetchall()
+        if after_id and updated_after:
+            rows = con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.updated_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,reply.updated_at AS reply_updated_at,u.id AS user_id,u.name,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source FROM messages m JOIN users u ON u.id=m.user_id LEFT JOIN messages reply ON reply.id=m.reply_to_id AND reply.project_id=m.project_id AND reply.id>? WHERE m.project_id=? AND m.id>? AND (m.id>? OR m.updated_at>? OR reply.updated_at>?) ORDER BY m.id LIMIT 100", (cutoff,project_id,cutoff,max(after_id,cutoff),updated_after,updated_after)).fetchall()
+        elif after_id:
+            rows = con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.updated_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,reply.updated_at AS reply_updated_at,u.id AS user_id,u.name,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source FROM messages m JOIN users u ON u.id=m.user_id LEFT JOIN messages reply ON reply.id=m.reply_to_id AND reply.project_id=m.project_id AND reply.id>? WHERE m.project_id=? AND m.id>? ORDER BY m.id LIMIT 100", (cutoff,project_id, max(after_id,cutoff))).fetchall()
         else:
-            rows = con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.id AS user_id,u.name,u.avatar,u.profile_photo,u.profile_photo_version FROM messages m JOIN users u ON u.id=m.user_id LEFT JOIN messages reply ON reply.id=m.reply_to_id AND reply.project_id=m.project_id AND reply.id>? WHERE m.project_id=? AND m.id>? ORDER BY m.id DESC LIMIT 100", (cutoff,project_id,cutoff)).fetchall()
+            rows = con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.updated_at,m.pinned_at,m.pinned_by,m.deleted_at,m.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,reply.updated_at AS reply_updated_at,u.id AS user_id,u.name,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source FROM messages m JOIN users u ON u.id=m.user_id LEFT JOIN messages reply ON reply.id=m.reply_to_id AND reply.project_id=m.project_id AND reply.id>? WHERE m.project_id=? AND m.id>? ORDER BY m.id DESC LIMIT 100", (cutoff,project_id,cutoff)).fetchall()
             rows = list(reversed(rows))
+        response.headers["X-Message-Sync-Cursor"] = con.execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')").fetchone()[0]
         return [dict(row) for row in rows]
 
 
@@ -862,7 +867,7 @@ def send_message(project_id: int, body: MessageCreate, user: User):
             raise HTTPException(status_code=404, detail="reply target not found")
         cur = con.execute("INSERT INTO messages(project_id,user_id,body,reply_to_id) VALUES(?,?,?,?)", (project_id, user["id"], text, body.reply_to_id))
         _log_activity(con, project_id, user["id"], "message_sent", "sent a project message")
-        return dict(con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.id AS user_id,u.name,u.avatar,u.profile_photo,u.profile_photo_version FROM messages m JOIN users u ON u.id=m.user_id LEFT JOIN messages reply ON reply.id=m.reply_to_id AND reply.project_id=m.project_id WHERE m.id=?", (cur.lastrowid,)).fetchone())
+        return dict(con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,m.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.id AS user_id,u.name,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source FROM messages m JOIN users u ON u.id=m.user_id LEFT JOIN messages reply ON reply.id=m.reply_to_id AND reply.project_id=m.project_id WHERE m.id=?", (cur.lastrowid,)).fetchone())
 
 
 @app.patch("/api/projects/{project_id}/messages/{message_id}")
@@ -881,7 +886,7 @@ def edit_group_message(project_id: int, message_id: int, body: MessageUpdate, us
         if message["deleted_at"] is not None: raise HTTPException(status_code=409, detail="message is deleted")
         con.execute("UPDATE messages SET body=?,edited_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?", (text, message_id))
         _log_activity(con, project_id, user["id"], "message_edited", "edited a group message")
-        return dict(con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,u.id AS user_id,u.name,u.avatar,u.profile_photo,u.profile_photo_version FROM messages m JOIN users u ON u.id=m.user_id WHERE m.id=?", (message_id,)).fetchone())
+        return dict(con.execute("SELECT m.id,m.project_id,m.body,m.created_at,m.edited_at,m.pinned_at,m.pinned_by,u.id AS user_id,u.name,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source FROM messages m JOIN users u ON u.id=m.user_id WHERE m.id=?", (message_id,)).fetchone())
 
 
 @app.delete("/api/projects/{project_id}/messages/{message_id}", status_code=204)
@@ -955,7 +960,7 @@ def list_people(user: User):
     """Return accepted friends and existing group classmates without exposing email addresses."""
     with db.connect() as con:
         return [dict(row) for row in con.execute("""SELECT DISTINCT u.id,u.name
-            ,u.username,u.avatar,u.profile_photo,u.profile_photo_version FROM users u WHERE u.id<>? AND (
+            ,u.username,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source FROM users u WHERE u.id<>? AND (
             EXISTS(SELECT 1 FROM project_members mine JOIN project_members other ON mine.project_id=other.project_id WHERE mine.user_id=? AND other.user_id=u.id)
             OR EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='accepted' AND ((f.requester_id=? AND f.recipient_id=u.id) OR (f.recipient_id=? AND f.requester_id=u.id)))) ORDER BY u.name""", (user["id"], user["id"], user["id"], user["id"])).fetchall()]
 
@@ -967,7 +972,7 @@ def search_people(user: User, q: str = Query(min_length=3, max_length=24)):
         return []
     term = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     with db.connect() as con:
-        return [dict(row) for row in con.execute("""SELECT u.id,u.name,u.username,u.avatar,u.profile_photo,u.profile_photo_version,
+        return [dict(row) for row in con.execute("""SELECT u.id,u.name,u.username,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source,
             CASE WHEN EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='blocked' AND ((f.requester_id=? AND f.recipient_id=u.id) OR (f.recipient_id=? AND f.requester_id=u.id))) THEN 'blocked'
                  WHEN EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='accepted' AND ((f.requester_id=? AND f.recipient_id=u.id) OR (f.recipient_id=? AND f.requester_id=u.id))) THEN 'friends'
                  WHEN EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='pending' AND f.requester_id=? AND f.recipient_id=u.id) THEN 'request_sent'
@@ -984,7 +989,7 @@ def list_friend_requests(user: User):
     with db.connect() as con:
         return [dict(row) for row in con.execute("""SELECT f.id,f.status,f.created_at,f.requester_id,f.recipient_id,
             CASE WHEN f.status='blocked' AND f.requester_id=? THEN 1 ELSE 0 END AS blocked_by_me,
-            u.name,u.username,u.avatar,u.profile_photo,u.profile_photo_version,CASE WHEN f.recipient_id=? THEN 'incoming' ELSE 'outgoing' END AS direction
+            u.name,u.username,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source,CASE WHEN f.recipient_id=? THEN 'incoming' ELSE 'outgoing' END AS direction
             FROM friend_requests f JOIN users u ON u.id=CASE WHEN f.recipient_id=? THEN f.requester_id ELSE f.recipient_id END
             WHERE (f.requester_id=? OR f.recipient_id=?) AND f.status IN ('pending','accepted','blocked') ORDER BY f.id DESC""",
             (user["id"], user["id"], user["id"], user["id"], user["id"])).fetchall()]
@@ -993,13 +998,7 @@ def list_friend_requests(user: User):
 @app.get("/api/people/{person_id}/photo")
 def get_person_photo(person_id: int, user: User):
     with db.connect() as con:
-        connected = person_id == user["id"] or con.execute("""SELECT 1 WHERE EXISTS(SELECT 1 FROM project_members a JOIN project_members b ON a.project_id=b.project_id WHERE a.user_id=? AND b.user_id=?)
-            OR EXISTS(SELECT 1 FROM friend_requests WHERE status='accepted' AND ((requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?)))
-            OR EXISTS(SELECT 1 FROM direct_conversations WHERE (user_a=? AND user_b=?) OR (user_a=? AND user_b=?))""", (user["id"], person_id, user["id"], person_id, person_id, user["id"],user["id"],person_id,person_id,user["id"])).fetchone()
-        pending_admin = con.execute("""SELECT 1 FROM project_join_requests r JOIN project_members m ON m.project_id=r.project_id
-            WHERE r.user_id=? AND r.status='pending' AND m.user_id=? AND COALESCE(m.role_v6,m.role) IN ('owner','admin') LIMIT 1""", (person_id,user["id"])).fetchone()
-        if not connected and not pending_admin:
-            raise HTTPException(status_code=404, detail="profile photo not found")
+        # Profile photos are part of the public classmate profile; private account fields remain excluded.
         photo = con.execute("SELECT profile_photo FROM users WHERE id=?", (person_id,)).fetchone()
         if photo is None or not photo[0] or Path(photo[0]).name != photo[0]:
             raise HTTPException(status_code=404, detail="profile photo not found")
@@ -1014,18 +1013,17 @@ def get_person_photo(person_id: int, user: User):
 @app.get("/api/people/{person_id}")
 def get_classmate_profile(person_id: int, user: User):
     with db.connect() as con:
-        person = con.execute("SELECT id,name,username,avatar,bio,profile_photo,profile_photo_version FROM users WHERE id=?", (person_id,)).fetchone()
+        person = con.execute("SELECT id,name,username,avatar,bio,profile_photo,profile_photo_version,active_avatar_source FROM users WHERE id=?", (person_id,)).fetchone()
         if person is None or person_id == user["id"]:
             raise HTTPException(status_code=404, detail="classmate not found")
         blocked = con.execute("SELECT 1 FROM friend_requests WHERE status='blocked' AND ((requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?))", (user["id"],person_id,person_id,user["id"])).fetchone()
         friend = con.execute("SELECT 1 FROM friend_requests WHERE status='accepted' AND ((requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?))", (user["id"],person_id,person_id,user["id"])).fetchone()
         group = con.execute("SELECT 1 FROM project_members mine JOIN project_members theirs ON mine.project_id=theirs.project_id WHERE mine.user_id=? AND theirs.user_id=? LIMIT 1", (user["id"],person_id)).fetchone()
         history = con.execute("SELECT 1 FROM direct_conversations WHERE user_a=? AND user_b=?",tuple(sorted((user["id"],person_id)))).fetchone()
-        if not friend and not group and not history:
-            raise HTTPException(status_code=404, detail="classmate not found")
         result = dict(person)
         result["profile_photo"] = bool(result["profile_photo"])
-        result["relationship"] = "friends" if friend else "group_classmate" if group else "former_classmate"
+        pending = con.execute("SELECT 1 FROM friend_requests WHERE status='pending' AND ((requester_id=? AND recipient_id=?) OR (requester_id=? AND recipient_id=?)) LIMIT 1", (user["id"],person_id,person_id,user["id"])).fetchone()
+        result["relationship"] = "blocked" if blocked else "friends" if friend else "group_classmate" if group else "pending" if pending else "former_classmate" if history else "not_connected"
         result["blocked"] = bool(blocked)
         pair=tuple(sorted((user["id"],person_id)))
         old=con.execute("SELECT requires_friendship FROM direct_conversations WHERE user_a=? AND user_b=?",pair).fetchone()
@@ -1141,12 +1139,13 @@ def list_direct_conversations(user: User, archived: bool = False):
             CASE WHEN c.user_a=? THEN b.avatar ELSE a.avatar END AS person_avatar,
             CASE WHEN c.user_a=? THEN b.profile_photo ELSE a.profile_photo END AS person_profile_photo,
             CASE WHEN c.user_a=? THEN b.profile_photo_version ELSE a.profile_photo_version END AS person_profile_photo_version,
+            CASE WHEN c.user_a=? THEN b.active_avatar_source ELSE a.active_avatar_source END AS person_active_avatar_source,
             COALESCE(s.pinned,0) pinned,COALESCE(s.archived,0) archived,COALESCE(s.cleared_through_id,0) cleared_through_id,
             COALESCE(s.unread_override,0) unread_override
             FROM direct_conversations c JOIN users a ON a.id=c.user_a JOIN users b ON b.id=c.user_b
             LEFT JOIN conversation_user_state s ON s.user_id=? AND s.conversation_type='direct' AND s.conversation_id=c.id
             WHERE c.user_a=? OR c.user_b=?""",
-            (user["id"],user["id"],user["id"],user["id"],user["id"],user["id"],user["id"],user["id"],user["id"])).fetchall()
+            (user["id"],user["id"],user["id"],user["id"],user["id"],user["id"],user["id"],user["id"],user["id"],user["id"])).fetchall()
         result=[]
         for raw in rows:
             row=dict(raw); other=row["person_id"]
@@ -1247,7 +1246,7 @@ def start_direct_conversation(body: DirectConversationCreate, user: User):
 
 
 @app.get("/api/direct/conversations/{conversation_id}/messages")
-def list_direct_messages(conversation_id: int, user: User, after_id: int = Query(default=0, ge=0), mark_read: bool = Query(default=False)):
+def list_direct_messages(conversation_id: int, user: User, response: Response, after_id: int = Query(default=0, ge=0), updated_after: str | None = Query(default=None, max_length=40), mark_read: bool = Query(default=False)):
     with db.connect() as con:
         _direct_conversation(con, conversation_id, user["id"])
         state = con.execute("SELECT cleared_through_id FROM conversation_user_state WHERE user_id=? AND conversation_type='direct' AND conversation_id=?", (user["id"],conversation_id)).fetchone()
@@ -1255,13 +1254,17 @@ def list_direct_messages(conversation_id: int, user: User, after_id: int = Query
         if mark_read:
             con.execute("UPDATE direct_messages SET read_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE conversation_id=? AND sender_id<>? AND read_at IS NULL", (conversation_id, user["id"]))
             con.execute("UPDATE conversation_user_state SET unread_override=0 WHERE user_id=? AND conversation_type='direct' AND conversation_id=?", (user["id"],conversation_id))
-        if after_id:
-            rows=con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,dm.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.name AS sender_name,u.avatar,u.profile_photo,u.profile_photo_version
+        if after_id and updated_after:
+            rows=con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.updated_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,dm.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,reply.updated_at AS reply_updated_at,u.name AS sender_name,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source
+                FROM direct_messages dm JOIN users u ON u.id=dm.sender_id LEFT JOIN direct_messages reply ON reply.id=dm.reply_to_id AND reply.conversation_id=dm.conversation_id AND reply.id>? WHERE dm.conversation_id=? AND dm.id>? AND (dm.id>? OR dm.updated_at>? OR reply.updated_at>?) ORDER BY dm.id LIMIT 100""",(cutoff,conversation_id,cutoff,max(after_id,cutoff),updated_after,updated_after)).fetchall()
+        elif after_id:
+            rows=con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.updated_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,dm.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,reply.updated_at AS reply_updated_at,u.name AS sender_name,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source
                 FROM direct_messages dm JOIN users u ON u.id=dm.sender_id LEFT JOIN direct_messages reply ON reply.id=dm.reply_to_id AND reply.conversation_id=dm.conversation_id AND reply.id>? WHERE dm.conversation_id=? AND dm.id>? ORDER BY dm.id LIMIT 100""",(cutoff,conversation_id,max(after_id,cutoff))).fetchall()
         else:
-            rows=con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,dm.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.name AS sender_name,u.avatar,u.profile_photo,u.profile_photo_version
+            rows=con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.updated_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,dm.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,reply.updated_at AS reply_updated_at,u.name AS sender_name,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source
                 FROM direct_messages dm JOIN users u ON u.id=dm.sender_id LEFT JOIN direct_messages reply ON reply.id=dm.reply_to_id AND reply.conversation_id=dm.conversation_id AND reply.id>? WHERE dm.conversation_id=? AND dm.id>? ORDER BY dm.id DESC LIMIT 100""",(cutoff,conversation_id,cutoff)).fetchall()
             rows=list(reversed(rows))
+        response.headers["X-Message-Sync-Cursor"] = con.execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')").fetchone()[0]
         return [dict(row) for row in rows]
 
 
@@ -1279,7 +1282,7 @@ def send_direct_message(conversation_id: int, body: MessageCreate, user: User):
         conversation = con.execute("SELECT user_a,user_b FROM direct_conversations WHERE id=?", (conversation_id,)).fetchone()
         recipient = conversation["user_b"] if conversation["user_a"] == user["id"] else conversation["user_a"]
         con.execute("INSERT INTO notifications(user_id,actor_id,kind,detail) VALUES(?,?, 'direct_message','You received a new message.')", (recipient,user["id"]))
-        return dict(con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,dm.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.name AS sender_name,u.avatar,u.profile_photo,u.profile_photo_version
+        return dict(con.execute("""SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.read_at,dm.created_at,dm.edited_at,dm.deleted_at,dm.pinned_at,dm.pinned_by,dm.reply_to_id,reply.body AS reply_body,reply.deleted_at AS reply_deleted_at,u.name AS sender_name,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source
             FROM direct_messages dm JOIN users u ON u.id=dm.sender_id LEFT JOIN direct_messages reply ON reply.id=dm.reply_to_id AND reply.conversation_id=dm.conversation_id WHERE dm.id=?""", (cursor.lastrowid,)).fetchone())
 
 
@@ -1295,7 +1298,7 @@ def edit_direct_message(conversation_id: int, message_id: int, body: MessageUpda
         if row["sender_id"]!=user["id"]: raise HTTPException(status_code=403,detail="you can only edit your own messages")
         if row["deleted_at"] is not None: raise HTTPException(status_code=409,detail="message is deleted")
         con.execute("UPDATE direct_messages SET body=?,edited_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?",(text,message_id))
-        return dict(con.execute("SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.created_at,dm.edited_at,dm.deleted_at,u.name sender_name,u.avatar,u.profile_photo,u.profile_photo_version FROM direct_messages dm JOIN users u ON u.id=dm.sender_id WHERE dm.id=?",(message_id,)).fetchone())
+        return dict(con.execute("SELECT dm.id,dm.conversation_id,dm.sender_id,dm.body,dm.created_at,dm.edited_at,dm.deleted_at,u.name sender_name,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source FROM direct_messages dm JOIN users u ON u.id=dm.sender_id WHERE dm.id=?",(message_id,)).fetchone())
 
 
 @app.delete("/api/direct/conversations/{conversation_id}/messages/{message_id}",status_code=204)
