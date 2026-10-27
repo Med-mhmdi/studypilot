@@ -121,6 +121,33 @@ function attachCharacterCounter(input) {
 }
 function refreshCharacterCounters(root = document) { $$('[maxlength]', root).forEach(attachCharacterCounter); $$('.character-counter', root).forEach(counter => { const input = counter.previousElementSibling; if (input) input.dispatchEvent(new Event('change')); }); }
 refreshCharacterCounters();
+function addPasswordVisibilityToggles() {
+  $$('.field input[type="password"]').forEach(input => {
+    if (input.dataset.visibilityToggle) return;
+    input.dataset.visibilityToggle = 'true';
+    const counter = input.nextElementSibling?.classList.contains('character-counter') ? input.nextElementSibling : null;
+    const wrap = document.createElement('span');
+    wrap.className = 'password-input-wrap';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'password-toggle';
+    toggle.setAttribute('aria-label', 'Show password');
+    toggle.setAttribute('aria-pressed', 'false');
+    toggle.title = 'Show password';
+    setIcon(toggle, 'eye');
+    input.parentNode.insertBefore(wrap, input);
+    wrap.append(input, toggle);
+    if (counter) wrap.after(counter);
+    toggle.addEventListener('click', () => {
+      const visible = input.type === 'password';
+      input.type = visible ? 'text' : 'password';
+      toggle.setAttribute('aria-label', visible ? 'Hide password' : 'Show password');
+      toggle.setAttribute('aria-pressed', String(visible));
+      toggle.title = visible ? 'Hide password' : 'Show password';
+    });
+  });
+}
+addPasswordVisibilityToggles();
 document.addEventListener('reset', event => requestAnimationFrame(() => refreshCharacterCounters(event.target)));
 new MutationObserver(records => records.forEach(record => record.addedNodes.forEach(node => { if (node.nodeType === Node.ELEMENT_NODE) { if(node.matches('[maxlength]'))attachCharacterCounter(node);refreshCharacterCounters(node); } }))).observe(document.body, { childList: true, subtree: true });
 
@@ -157,19 +184,34 @@ function requestTextInput({title,message,value='',confirmLabel='Save',maxLength=
 }
 
 async function api(url, options = {}) {
-  const response = await fetch(url, {
-    credentials: 'same-origin',
-    ...options,
-    headers: { ...(options.body && !(options.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}), ...options.headers },
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      credentials: 'same-origin',
+      ...options,
+      headers: { ...(options.body && !(options.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}), ...options.headers },
+    });
+  } catch {
+    throw new Error('Unable to reach StudyPilot. Check your connection and try again.');
+  }
+  if (response.status === 401 && url.startsWith('/api/auth/login')) throw new Error('Incorrect email or password.');
   if (response.status === 401) {
+    const hadSession = Boolean(user) || !$('#app-screen').hidden;
     $('#app-screen').hidden = true;
     $('#auth-screen').hidden = false;
-    throw new Error('Please sign in to continue.');
+    authMode(false);
+    if (hadSession) $('#auth-error').textContent = 'Your session expired. Please sign in again.';
+    throw new Error(hadSession ? 'Your session expired. Please sign in again.' : 'Please sign in to continue.');
   }
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     const detail=Array.isArray(data.detail)?data.detail[0]?.msg:typeof data.detail==='object'?data.detail?.message:data.detail;
+    if (response.status >= 500) throw new Error('StudyPilot is having trouble right now. Try again shortly.');
+    if (response.status === 422 && /^\/api\/auth\/(register|login)/.test(url)) throw new Error('Please check the highlighted fields and try again.');
+    if (response.status === 409 && url === '/api/auth/register') {
+      const message = String(detail || '').toLowerCase();
+      throw new Error(message.includes('username') ? 'That username is already taken.' : 'An account with this email already exists.');
+    }
     throw new Error(detail||'Something went wrong. Please try again.');
   }
   if(response.status===204)return null;
@@ -263,16 +305,50 @@ function authMode(register) {
   $('#auth-title').textContent = register ? 'Start your account.' : 'Welcome back.';
   $('#auth-submit').textContent = register ? 'Create account →' : 'Sign in →';
   $('#auth-switch').textContent = register ? 'Already have an account? Sign in' : 'New to StudyPilot? Create an account';
+  $('#auth-error').textContent = '';
+  const email = $('[name="email"]', form);
+  email.autocomplete = register ? 'email' : 'username';
+  email.setCustomValidity('');
+  $('#auth-email-error').hidden = true;
+  $('#auth-email-error').textContent = '';
+  email.removeAttribute('aria-invalid');
   const password = $('[name="password"]', form);
   password.autocomplete = register ? 'new-password' : 'current-password';
   password.minLength = register ? 10 : 1;
 }
+
+const authEmail = $('#auth-form [name="email"]');
+const authEmailError = $('#auth-email-error');
+function validateAuthEmail(show = false) {
+  authEmail.setCustomValidity('');
+  let message = '';
+  if (!authEmail.value.trim()) message = 'Enter your email address.';
+  else if (authEmail.validity.typeMismatch || authEmail.value.length > 254) message = 'Enter a valid email address, such as name@example.com.';
+  if (message) authEmail.setCustomValidity(message);
+  if (show || !message) {
+    authEmailError.textContent = message;
+    authEmailError.hidden = !message;
+    authEmail.toggleAttribute('aria-invalid', Boolean(message));
+    authEmail.setAttribute('aria-describedby', 'auth-email-error');
+  }
+  return !message;
+}
+authEmail.addEventListener('input', () => validateAuthEmail(Boolean(authEmailError.textContent)));
+authEmail.addEventListener('blur', () => validateAuthEmail(true));
+authEmail.addEventListener('invalid', () => validateAuthEmail(true));
 
 $('#auth-switch').addEventListener('click', () => authMode($('#auth-form').dataset.register !== 'true'));
 $('#auth-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const registering = event.currentTarget.dataset.register === 'true';
   $('#auth-error').textContent = '';
+  if (!validateAuthEmail(true)) { authEmail.focus(); return; }
+  const password = $('[name="password"]', event.currentTarget);
+  if (password.value.length < (registering ? 10 : 1)) {
+    password.focus();
+    password.reportValidity();
+    return;
+  }
   try {
     const formData = new FormData(event.currentTarget);
     const payload = registering

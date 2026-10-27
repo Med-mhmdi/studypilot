@@ -33,6 +33,16 @@
 
 #view-people .people-layout>.workspace:not(.people-search-panel)>h2{display:none}
 
+/* Accessible authentication controls */
+.password-input-wrap{display:flex;align-items:stretch;min-width:0;position:relative}
+.password-input-wrap>input{flex:1;min-width:0;padding-right:44px!important}
+.password-toggle{position:absolute;right:5px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:34px;height:34px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--muted);cursor:pointer}
+.password-toggle:hover,.password-toggle[aria-pressed="true"]{background:var(--surface-soft);color:var(--purple)}
+.password-toggle svg{width:18px;height:18px}
+.password-toggle:focus-visible{outline:3px solid #8176e766;outline-offset:1px}
+.field-validation{display:block;margin-top:-3px;color:#b33b48;font-size:11px;line-height:1.4}
+[data-theme="dark"] .field-validation{color:#f2a6ad}
+
 /* v7 board, comments, people, and theme polish */
 :root[data-theme="dark"]{--ink:#eff0f7;--muted:#b3b5c3;--line:#3b3e4f;--surface:#222431;--surface-soft:#292b39;--brand:#a79cf4;color:var(--ink);background:#171923}
 [data-theme="dark"] body{background:radial-gradient(ellipse at 78% 2%,#29263e 0,transparent 31%),#171923;color:var(--ink)}
