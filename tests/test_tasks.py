@@ -256,6 +256,26 @@ def test_login_payload_and_task_status_timestamps(tmp_path, monkeypatch):
         assert reopened["completed_at"] is None and reopened["started_at"] == started["started_at"]
 
 
+def test_auth_email_validation_duplicates_and_deleted_login_are_safe(tmp_path, monkeypatch):
+    with client_for(tmp_path / "auth-validation.db", monkeypatch) as client:
+        invalid_register = client.post("/api/auth/register", json={"email":"not-an-email","username":"student","name":"Student","password":"study-together-123"})
+        assert invalid_register.status_code == 422
+        assert "email" in str(invalid_register.json()).lower()
+        registered = client.post("/api/auth/register", json={"email":"student@example.edu","username":"student","name":"Student","password":"study-together-123"})
+        assert registered.status_code == 201
+        duplicate = client.post("/api/auth/register", json={"email":"student@example.edu","username":"other","name":"Other","password":"study-together-123"})
+        assert duplicate.status_code == 409
+        wrong_password = client.post("/api/auth/login", json={"email":"student@example.edu","password":"incorrect-password"})
+        unknown_account = client.post("/api/auth/login", json={"email":"missing@example.edu","password":"incorrect-password"})
+        assert wrong_password.status_code == unknown_account.status_code == 401
+        assert wrong_password.json() == unknown_account.json()
+        assert "password" in wrong_password.json()["detail"].lower()
+        assert client.request("DELETE", "/api/account", json={"current_password":"study-together-123","confirmation":"DELETE"}).status_code == 204
+        deleted_login = client.post("/api/auth/login", json={"email":"student@example.edu","password":"study-together-123"})
+        assert deleted_login.status_code == 401
+        assert deleted_login.json() == unknown_account.json()
+
+
 def test_username_friend_request_accept_block_and_private_access(tmp_path, monkeypatch):
     with client_for(tmp_path / "planner.db", monkeypatch) as alice:
         register(alice, "alice@example.edu", "Alice")
