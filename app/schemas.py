@@ -34,6 +34,11 @@ class PasswordUpdate(RequestModel):
     new_password: str = Field(min_length=10, max_length=200)
 
 
+class AccountDeletion(RequestModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    confirmation: str = Field(pattern=r"^DELETE$", max_length=6)
+
+
 class ProjectCreate(RequestModel):
     name: str = Field(min_length=1, max_length=50)
     description: str = Field(default="", max_length=400)

@@ -858,11 +858,94 @@ def test_milestone_optional_date_title_limit_and_migration_cleanup(tmp_path, mon
         assert owner.post(f"/api/projects/{project['id']}/milestones",json={"title":"x"*41}).status_code==422
         con=sqlite3.connect(path)
         row=con.execute("SELECT title,due_date FROM milestones WHERE id=1").fetchone()
-        invitation_exists=con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='invitations'").fetchone()
+        invitation=con.execute("SELECT email,token_hash FROM invitations WHERE id=1").fetchone()
         nullable=next(column[3] for column in con.execute("PRAGMA table_info(milestones)") if column[1]=='due_date')
         con.close()
         assert row==("Keep this milestone","2026-10-20")
-        assert invitation_exists is None and nullable==0
+        assert invitation==("unused@example.edu","token-hash") and nullable==0
+
+
+def test_account_deletion_preserves_shared_history_and_erases_private_data(tmp_path, monkeypatch):
+    path=tmp_path/"account-delete.db"
+    with client_for(path,monkeypatch) as owner:
+        register(owner,"owner@example.edu","Owner")
+        with TestClient(app) as admin, TestClient(app) as student:
+            register(admin,"admin@example.edu","Admin")
+            register(student,"student@example.edu","Student")
+            project=owner.post("/api/projects",json={"name":"Shared study group"}).json()
+            join_group(owner,admin,project)
+            join_group(owner,student,project)
+            assert owner.patch(f"/api/projects/{project['id']}/members/2",json={"role":"admin"}).status_code==200
+            personal=owner.post("/api/tasks",json={"title":"Private assignment","due_date":"2026-11-01"}).json()
+            shared=owner.post("/api/tasks",json={"title":"Shared assignment","due_date":"2026-11-02","project_id":project["id"],"assignee_ids":[2,3]}).json()
+            comment=owner.post(f"/api/tasks/{shared['id']}/comments",json={"body":"Keep this shared comment."})
+            message=owner.post(f"/api/projects/{project['id']}/messages",json={"body":"Keep this group message."})
+            assert comment.status_code==201 and message.status_code==201
+
+            owner.post("/api/friend-requests",json={"username":"student"})
+            req=student.get("/api/friend-requests").json()[0]
+            assert student.post(f"/api/friend-requests/{req['id']}/accept").status_code==200
+            convo=owner.post("/api/direct/conversations",json={"recipient_id":3}).json()
+            first=owner.post(f"/api/direct/conversations/{convo['id']}/messages",json={"body":"Owner DM to student"})
+            second=student.post(f"/api/direct/conversations/{convo['id']}/messages",json={"body":"Student reply to owner"})
+            assert first.status_code==201 and second.status_code==201
+            assert owner.post("/api/people/3/block").status_code==204
+            assert student.post("/api/people/1/block").status_code==204
+            stale_cookie=owner.cookies.get("studypilot_session")
+
+            photo_dir=tmp_path/"profile-photos"
+            photo_dir.mkdir()
+            (photo_dir/"owner.webp").write_bytes(b"converted photo")
+            (photo_dir/"owner-original.webp").write_bytes(b"original photo")
+            with sqlite3.connect(path) as con:
+                con.execute("UPDATE users SET profile_photo='owner.webp',profile_photo_original='owner-original.webp',bio='Private biography' WHERE id=1")
+
+            blocked=owner.request("DELETE","/api/account",json={"current_password":"study-together-123","confirmation":"DELETE"})
+            assert blocked.status_code==409 and blocked.json()["detail"]["groups"][0]["id"]==project["id"]
+            assert owner.get(f"/api/tasks/{personal['id']}").status_code==200
+            assert owner.post(f"/api/projects/{project['id']}/transfer-owner",json={"user_id":2}).status_code==200
+            bad_password=owner.request("DELETE","/api/account",json={"current_password":"bad-password","confirmation":"DELETE"})
+            assert bad_password.status_code==400
+            deleted=owner.request("DELETE","/api/account",json={"current_password":"study-together-123","confirmation":"DELETE"})
+            assert deleted.status_code==204
+            assert owner.get("/api/auth/me").status_code==401
+            with TestClient(app) as old_session:
+                old_session.cookies.set("studypilot_session",stale_cookie)
+                assert old_session.get("/api/auth/me").status_code==401
+            assert owner.post("/api/auth/login",json={"email":"owner@example.edu","password":"study-together-123"}).status_code==401
+            assert not (photo_dir/"owner.webp").exists() and not (photo_dir/"owner-original.webp").exists()
+
+            assert admin.get(f"/api/projects/{project['id']}").status_code==200
+            assert admin.get("/api/projects").json()[0]["role"]=="owner"
+            assert admin.get(f"/api/tasks/{shared['id']}").status_code==200
+            reassigned=admin.patch(f"/api/tasks/{shared['id']}",json={"assignee_ids":[3]})
+            assert reassigned.status_code==200 and [item["id"] for item in reassigned.json()["assignees"]]==[3]
+            assert admin.get(f"/api/tasks/{shared['id']}/comments").json()[0]["name"]=="Deleted User"
+            group_messages=admin.get(f"/api/projects/{project['id']}/messages").json()
+            assert any(row["body"]=="Keep this group message." and row["name"]=="Deleted User" for row in group_messages)
+            activity=admin.get("/api/activity").json()
+            assert any(row["project_id"]==project["id"] and row["actor"]=="Deleted User" for row in activity)
+            direct_list=student.get("/api/direct/conversations").json()
+            assert any(row["id"]==convo["id"] and row["person_name"]=="Deleted User" and not row["can_message"] for row in direct_list)
+            direct_history=student.get(f"/api/direct/conversations/{convo['id']}/messages").json()
+            assert [row["body"] for row in direct_history]==["Owner DM to student","Student reply to owner"]
+            assert direct_history[0]["sender_name"]=="Deleted User"
+            assert student.post(f"/api/direct/conversations/{convo['id']}/messages",json={"body":"A new message"}).status_code==403
+            assert student.get("/api/people/search?q=owner").json()==[]
+            assert student.get("/api/people/1").status_code==404
+
+    with sqlite3.connect(path) as con:
+        con.row_factory=sqlite3.Row
+        tombstone=con.execute("SELECT email,name,username,bio,profile_photo,deleted_at FROM users WHERE id=1").fetchone()
+        assert tombstone["name"]=="Deleted User" and tombstone["username"] is None and tombstone["email"]!="owner@example.edu"
+        assert tombstone["bio"]=="" and tombstone["profile_photo"] is None and tombstone["deleted_at"]
+        assert con.execute("SELECT 1 FROM tasks WHERE id=?",(personal["id"],)).fetchone() is None
+        assert con.execute("SELECT owner_id FROM tasks WHERE id=?",(shared["id"],)).fetchone()[0] is None
+        assert con.execute("SELECT COUNT(*) FROM task_assignees WHERE task_id=? AND user_id=1",(shared["id"],)).fetchone()[0]==0
+        assert con.execute("SELECT COUNT(*) FROM friend_requests WHERE requester_id=1 OR recipient_id=1").fetchone()[0]==0
+        assert con.execute("SELECT COUNT(*) FROM notifications WHERE user_id=1").fetchone()[0]==0
+        assert con.execute("SELECT created_by FROM projects WHERE id=?",(project["id"],)).fetchone()[0]==2
+        assert con.execute("PRAGMA foreign_key_check").fetchall()==[]
 
 
 def test_group_assignment_reassignment_is_authorized_and_persisted(tmp_path, monkeypatch):

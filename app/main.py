@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import db
-from app.schemas import (ConversationStateUpdate, DirectConversationCreate, FriendRequestCreate, JoinCodeSubmit, Login, MessageCreate, MessageUpdate, NotificationAction, ProjectUpdate, MemberRoleUpdate, OwnershipTransfer,
+from app.schemas import (AccountDeletion, ConversationStateUpdate, DirectConversationCreate, FriendRequestCreate, JoinCodeSubmit, Login, MessageCreate, MessageUpdate, NotificationAction, ProjectUpdate, MemberRoleUpdate, OwnershipTransfer,
                          MilestoneCreate, MilestoneUpdate, PasswordUpdate, ProfileUpdate,
                          ProjectCreate, Priority, Register, TaskCreate, TaskStatus, TaskUpdate)
 from app.telemetry import configure_telemetry, request_metrics
@@ -83,11 +83,13 @@ def current_user(request: Request) -> dict:
     if not user_id:
         raise HTTPException(status_code=401, detail="sign in to continue")
     with db.connect() as con:
-        row = con.execute("SELECT id,email,name,username,created_at,avatar,active_avatar_source,bio,theme,profile_photo,profile_photo_version,profile_photo_crop FROM users WHERE id=?", (user_id,)).fetchone()
-    if row is None:
+        row = con.execute("SELECT id,email,name,username,created_at,avatar,active_avatar_source,bio,theme,profile_photo,profile_photo_version,profile_photo_crop,deleted_at FROM users WHERE id=?", (user_id,)).fetchone()
+    if row is None or row["deleted_at"] is not None:
         request.session.clear()
         raise HTTPException(status_code=401, detail="sign in to continue")
-    return dict(row)
+    result = dict(row)
+    result.pop("deleted_at", None)
+    return result
 
 
 User = Annotated[dict, Depends(current_user)]
@@ -194,7 +196,7 @@ def register(body: Register, request: Request):
 @app.post("/api/auth/login")
 def login(body: Login, request: Request):
     with db.connect() as con:
-        row = con.execute("SELECT * FROM users WHERE email=? COLLATE NOCASE", (str(body.email).strip(),)).fetchone()
+        row = con.execute("SELECT * FROM users WHERE email=? COLLATE NOCASE AND deleted_at IS NULL", (str(body.email).strip(),)).fetchone()
     if row is None or not _verify_password(body.password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="email or password is incorrect")
     request.session.clear()
@@ -361,6 +363,45 @@ def update_password(body: PasswordUpdate, user: User):
     return Response(status_code=204)
 
 
+@app.delete("/api/account", status_code=204)
+def delete_account(body: AccountDeletion, request: Request, user: User):
+    photo_names: list[str] = []
+    with db.connect() as con:
+        account = con.execute("SELECT password_hash,profile_photo,profile_photo_original FROM users WHERE id=? AND deleted_at IS NULL", (user["id"],)).fetchone()
+        if account is None or not _verify_password(body.current_password, account["password_hash"]):
+            raise HTTPException(status_code=400, detail="current password is incorrect")
+        owned = con.execute("""SELECT DISTINCT p.id,p.name FROM projects p
+            LEFT JOIN project_members m ON m.project_id=p.id AND m.user_id=?
+            WHERE p.created_by=? OR m.role='owner' OR m.role_v6='owner' ORDER BY p.id""", (user["id"],user["id"])).fetchall()
+        if owned:
+            raise HTTPException(status_code=409, detail={"message":"transfer ownership or delete each group before deleting your account","groups":[{"id":row["id"],"name":row["name"]} for row in owned]})
+
+        photo_names = [account["profile_photo"], account["profile_photo_original"]]
+        con.execute("DELETE FROM tasks WHERE owner_id=? AND project_id IS NULL", (user["id"],))
+        con.execute("UPDATE tasks SET owner_id=NULL WHERE owner_id=? AND project_id IS NOT NULL", (user["id"],))
+        con.execute("DELETE FROM task_assignees WHERE user_id=?", (user["id"],))
+        con.execute("DELETE FROM project_members WHERE user_id=?", (user["id"],))
+        con.execute("DELETE FROM group_message_reads WHERE user_id=?", (user["id"],))
+        con.execute("DELETE FROM join_code_attempts WHERE user_id=?", (user["id"],))
+        con.execute("DELETE FROM project_join_requests WHERE user_id=?", (user["id"],))
+        con.execute("UPDATE project_join_requests SET reviewed_by=NULL WHERE reviewed_by=?", (user["id"],))
+        con.execute("DELETE FROM notifications WHERE user_id=?", (user["id"],))
+        con.execute("DELETE FROM conversation_user_state WHERE user_id=?", (user["id"],))
+        con.execute("DELETE FROM friend_requests WHERE requester_id=? OR recipient_id=?", (user["id"],user["id"]))
+        con.execute("UPDATE direct_conversations SET requires_friendship=1 WHERE user_a=? OR user_b=?", (user["id"],user["id"]))
+        con.execute("""UPDATE users SET email=?,username=NULL,name='Deleted User',password_hash=?,
+            avatar='violet',active_avatar_source='avatar',bio='',theme='light',profile_photo=NULL,
+            profile_photo_original=NULL,profile_photo_crop=NULL,profile_photo_version=NULL,
+            deleted_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?""",
+            (f"deleted-{user['id']}-{secrets.token_hex(12)}@deleted.invalid",_hash_password(secrets.token_urlsafe(48)),user["id"]))
+    request.session.clear()
+    photo_root = db.database_path().parent / "profile-photos"
+    for filename in photo_names:
+        if filename and Path(filename).name == filename:
+            (photo_root / filename).unlink(missing_ok=True)
+    return Response(status_code=204)
+
+
 @app.get("/api/projects")
 def list_projects(user: User):
     with db.connect() as con:
@@ -471,6 +512,7 @@ def transfer_owner(project_id: int, body: OwnershipTransfer, user: User):
             raise HTTPException(status_code=404, detail="choose another current group member")
         con.execute("UPDATE project_members SET role='editor',role_v6='admin' WHERE project_id=? AND user_id=?", (project_id, user["id"]))
         con.execute("UPDATE project_members SET role='owner',role_v6='owner',legacy_readonly=0 WHERE project_id=? AND user_id=?", (project_id, body.user_id))
+        con.execute("UPDATE projects SET created_by=? WHERE id=?", (body.user_id, project_id))
         return {"owner_id": body.user_id}
 
 
@@ -769,7 +811,7 @@ def update_task(task_id: int, task: TaskUpdate, user: User):
             con.execute("INSERT INTO task_status_history(task_id,user_id,from_status,to_status) VALUES(?,?,?,?)",
                         (task_id, user["id"], old_status, new_status))
         if assignee_ids is not None:
-            ids = set(assignee_ids) | {row["owner_id"]}
+            ids = set(assignee_ids) | ({row["owner_id"]} if row["owner_id"] is not None else set())
             for assignee_id in ids:
                 if row["project_id"] is None and assignee_id != row["owner_id"]:
                     raise HTTPException(status_code=400, detail="personal assignments cannot be shared")
@@ -970,7 +1012,7 @@ def list_people(user: User):
         return [dict(row) for row in con.execute("""SELECT DISTINCT u.id,u.name
             ,u.username,u.avatar,u.profile_photo,u.profile_photo_version,u.active_avatar_source FROM users u WHERE u.id<>? AND (
             EXISTS(SELECT 1 FROM project_members mine JOIN project_members other ON mine.project_id=other.project_id WHERE mine.user_id=? AND other.user_id=u.id)
-            OR EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='accepted' AND ((f.requester_id=? AND f.recipient_id=u.id) OR (f.recipient_id=? AND f.requester_id=u.id)))) ORDER BY u.name""", (user["id"], user["id"], user["id"], user["id"])).fetchall()]
+            OR EXISTS(SELECT 1 FROM friend_requests f WHERE f.status='accepted' AND ((f.requester_id=? AND f.recipient_id=u.id) OR (f.recipient_id=? AND f.requester_id=u.id)))) AND u.deleted_at IS NULL ORDER BY u.name""", (user["id"], user["id"], user["id"], user["id"])).fetchall()]
 
 
 @app.get("/api/people/search")
@@ -988,7 +1030,7 @@ def search_people(user: User, q: str = Query(min_length=3, max_length=24)):
                  WHEN EXISTS(SELECT 1 FROM direct_conversations dc WHERE dc.requires_friendship=1 AND ((dc.user_a=? AND dc.user_b=u.id) OR (dc.user_b=? AND dc.user_a=u.id))) THEN 'request_needed'
                  WHEN EXISTS(SELECT 1 FROM project_members mine JOIN project_members theirs ON mine.project_id=theirs.project_id WHERE mine.user_id=? AND theirs.user_id=u.id) THEN 'group_classmate'
                  ELSE 'not_connected' END AS relationship FROM users u
-            WHERE u.id<>? AND u.username LIKE ? ESCAPE '\\' COLLATE NOCASE
+            WHERE u.id<>? AND u.deleted_at IS NULL AND u.username LIKE ? ESCAPE '\\' COLLATE NOCASE
             ORDER BY u.username LIMIT 10""", (user["id"],user["id"],user["id"],user["id"],user["id"],user["id"],user["id"],user["id"],user["id"],user["id"],f"{term}%")).fetchall()]
 
 
@@ -1008,7 +1050,7 @@ def list_friend_requests(user: User):
 def get_person_photo(person_id: int, user: User):
     with db.connect() as con:
         # Profile photos are part of the public classmate profile; private account fields remain excluded.
-        photo = con.execute("SELECT profile_photo FROM users WHERE id=?", (person_id,)).fetchone()
+        photo = con.execute("SELECT profile_photo FROM users WHERE id=? AND deleted_at IS NULL", (person_id,)).fetchone()
         if photo is None or not photo[0] or Path(photo[0]).name != photo[0]:
             raise HTTPException(status_code=404, detail="profile photo not found")
         path = db.database_path().parent / "profile-photos" / photo[0]
@@ -1022,7 +1064,7 @@ def get_person_photo(person_id: int, user: User):
 @app.get("/api/people/{person_id}")
 def get_classmate_profile(person_id: int, user: User):
     with db.connect() as con:
-        person = con.execute("SELECT id,name,username,avatar,bio,profile_photo,profile_photo_version,active_avatar_source FROM users WHERE id=?", (person_id,)).fetchone()
+        person = con.execute("SELECT id,name,username,avatar,bio,profile_photo,profile_photo_version,active_avatar_source FROM users WHERE id=? AND deleted_at IS NULL", (person_id,)).fetchone()
         if person is None or person_id == user["id"]:
             raise HTTPException(status_code=404, detail="classmate not found")
         blocked_by_me = con.execute("SELECT 1 FROM friend_requests WHERE status='blocked' AND requester_id=? AND recipient_id=?", (user["id"],person_id)).fetchone()
@@ -1064,7 +1106,7 @@ def block_classmate(person_id: int, user: User):
     if person_id == user["id"]:
         raise HTTPException(status_code=400, detail="you cannot block yourself")
     with db.connect() as con:
-        if con.execute("SELECT 1 FROM users WHERE id=?", (person_id,)).fetchone() is None:
+        if con.execute("SELECT 1 FROM users WHERE id=? AND deleted_at IS NULL", (person_id,)).fetchone() is None:
             raise HTTPException(status_code=404, detail="classmate not found")
         _set_blocked(con,user["id"],person_id)
     return Response(status_code=204)

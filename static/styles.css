@@ -127,6 +127,11 @@
 #profile-dialog{width:min(700px,calc(100vw - 24px))}
 #profile-dialog form{padding:25px}
 #profile-photo-viewer{width:min(80vw,640px);height:min(80vh,640px);padding:12px;overflow:visible;background:#171923;border:0}
+#delete-account-dialog{width:min(520px,calc(100vw - 24px));padding:22px}
+.delete-account-panel{display:grid;gap:12px}
+.delete-account-panel .dialog-head{align-items:flex-start}
+.delete-account-panel .dialog-description{max-width:58ch;line-height:1.55}
+.delete-account-panel .dialog-actions{flex-wrap:wrap}
 #profile-photo-large{width:100%;height:100%;object-fit:contain}
 .profile-photo-close{position:absolute;top:-14px;right:-14px}
 @media(max-width:900px){.board-lanes{grid-template-columns:repeat(4,minmax(160px,1fr))}.board-layout{grid-template-columns:82px minmax(0,1fr)}}

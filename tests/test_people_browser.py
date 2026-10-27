@@ -596,3 +596,46 @@ def test_block_ownership_is_directional_and_updates_open_views(tmp_path, monkeyp
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+
+
+def test_account_deletion_confirmation_in_mobile_profile(tmp_path, monkeypatch):
+    import uvicorn
+
+    monkeypatch.setenv("DB_PATH",str(tmp_path/"delete-account-ui.db"))
+    monkeypatch.setenv("SESSION_SECRET","delete-account-ui-session-key")
+    monkeypatch.setenv("COOKIE_SECURE","false")
+    port=_free_port();base=f"http://127.0.0.1:{port}"
+    server=uvicorn.Server(uvicorn.Config(app,host="127.0.0.1",port=port,log_level="error"))
+    thread=threading.Thread(target=server.run,daemon=True);thread.start();browser=None
+    try:
+        deadline=time.time()+10
+        while time.time()<deadline and not server.started: time.sleep(.05)
+        assert server.started
+        with sync_playwright() as automation:
+            chrome=Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+            browser=automation.chromium.launch(executable_path=str(chrome) if chrome.exists() else None)
+            context=browser.new_context(viewport={"width":390,"height":844},device_scale_factor=2,is_mobile=True)
+            assert context.request.post(f"{base}/api/auth/register",data={"email":"remove@example.edu","username":"remove-me","name":"Remove Me","password":"study-together-123"}).status==201
+            page=context.new_page();page.goto(f"{base}/#/dashboard")
+            page.locator("#account-button").click()
+            expect(page.locator("#account-menu")).to_be_visible()
+            menu_bounds=page.locator("#account-menu").evaluate("el=>{const r=el.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width,visible:getComputedStyle(el).visibility}}")
+            assert menu_bounds["left"]>=0 and menu_bounds["right"]<=390 and menu_bounds["width"]>0 and menu_bounds["visible"]=="visible",menu_bounds
+            page.locator("#profile-open").scroll_into_view_if_needed()
+            expect(page.locator("#profile-open")).to_be_visible()
+            page.locator("#profile-open").click()
+            expect(page.locator("#profile-dialog")).to_be_visible()
+            page.locator("#delete-account-open").click()
+            deletion=page.locator("#delete-account-dialog");expect(deletion).to_be_visible()
+            expect(deletion).to_contain_text("Shared group work and chat")
+            deletion.locator('[name="current_password"]').fill("wrong-password")
+            deletion.locator('[name="confirmation"]').fill("DELETE")
+            assert deletion.locator("form").evaluate("el=>el.checkValidity()")
+            deletion.get_by_role("button",name="Permanently delete account").click()
+            expect(page.locator("#delete-account-error")).to_have_text("current password is incorrect")
+            deletion.locator('[name="current_password"]').fill("study-together-123")
+            deletion.get_by_role("button",name="Permanently delete account").click()
+            expect(page.locator("#auth-screen")).to_be_visible(timeout=10000)
+            assert context.request.get(f"{base}/api/auth/me").status==401
+    finally:
+        server.should_exit=True;thread.join(timeout=5)

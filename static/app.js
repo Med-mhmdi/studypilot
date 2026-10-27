@@ -169,7 +169,8 @@ async function api(url, options = {}) {
   }
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    throw new Error(Array.isArray(data.detail) ? data.detail[0]?.msg : data.detail || 'Something went wrong. Please try again.');
+    const detail=Array.isArray(data.detail)?data.detail[0]?.msg:typeof data.detail==='object'?data.detail?.message:data.detail;
+    throw new Error(detail||'Something went wrong. Please try again.');
   }
   if(response.status===204)return null;
   const data=await response.json();
@@ -1354,6 +1355,8 @@ function openPhotoCrop(source,sourceUrl='',savedCrop=null){$('#photo-edit-error'
 async function editCurrentProfilePhoto(){if(pendingProfilePhotoOriginal){const source=URL.createObjectURL(pendingProfilePhotoOriginal);openPhotoCrop(source,source,pendingProfilePhotoCrop);return;}if(user?.profile_photo){try{const response=await fetch('/api/profile/photo/original',{credentials:'same-origin'});if(!response.ok){const error=await response.json().catch(()=>({}));throw new Error(error.detail||'The original photo is unavailable; upload it again to re-crop.');}const blob=await response.blob();pendingProfilePhotoOriginal=new File([blob],'profile-photo-original',{type:blob.type||'image/jpeg'});let crop=null;try{crop=JSON.parse(user.profile_photo_crop||'null');}catch{}const source=URL.createObjectURL(pendingProfilePhotoOriginal);openPhotoCrop(source,source,crop);}catch(error){$('#photo-edit-error').textContent=error.message;$('#profile-photo-editor').showModal();}return;}$('#profile-photo').click();}
 function openProfileDialog(){resetProfilePhotoDraft();$('#account-menu').hidden=true;$('#profile-form').reset();$('#profile-form').elements.name.value=user.name;$('#profile-form').elements.username.value=user.username;$('#profile-form').elements.bio.value=user.bio||'';$('#profile-email').value=user.email;$('#profile-error').textContent='';$('#profile-saved').textContent='';updateProfilePhotoPreview();$('#profile-dialog').showModal();}
 $('#profile-open').addEventListener('click',openProfileDialog);
+$('#delete-account-open').addEventListener('click',()=>{$('#profile-dialog').close();$('#delete-account-form').reset();$('#delete-account-error').textContent='';$('#delete-account-dialog').showModal();});
+$('#delete-account-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.currentTarget.querySelector('button[type="submit"]');button.disabled=true;$('#delete-account-error').textContent='';try{await api('/api/account',{method:'DELETE',body:JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))});stopPolling();user=null;location.assign('/');}catch(error){$('#delete-account-error').textContent=error.message;button.disabled=false;}});
 let profileAvatarClickTimer=null;
 $('#profile-avatar-preview').addEventListener('click',()=>{clearTimeout(profileAvatarClickTimer);profileAvatarClickTimer=setTimeout(showProfilePhotoViewer,230);});
 $('#profile-avatar-preview').addEventListener('dblclick',event=>{event.preventDefault();clearTimeout(profileAvatarClickTimer);editCurrentProfilePhoto();});

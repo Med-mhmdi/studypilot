@@ -59,6 +59,8 @@ def initialize() -> None:
         for column, definition in (("avatar", "TEXT NOT NULL DEFAULT 'violet'"), ("active_avatar_source", "TEXT NOT NULL DEFAULT 'avatar'"), ("bio", "TEXT NOT NULL DEFAULT ''"), ("theme", "TEXT NOT NULL DEFAULT 'light'"), ("profile_photo", "TEXT"), ("profile_photo_original", "TEXT"), ("profile_photo_crop", "TEXT"), ("profile_photo_version", "TEXT")):
             if column not in user_columns:
                 con.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
+        if "deleted_at" not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN deleted_at TEXT")
         # Keep existing saved photos active during migration; new accounts start with their illustration.
         if not had_avatar_source:
             con.execute("UPDATE users SET active_avatar_source=CASE WHEN profile_photo IS NOT NULL THEN 'photo' ELSE 'avatar' END")
@@ -148,9 +150,9 @@ def initialize() -> None:
             con.execute("INSERT INTO milestones_v2(id,project_id,title,due_date,status,created_by,created_at) SELECT id,project_id,title,due_date,status,created_by,created_at FROM milestones")
             con.execute("DROP TABLE milestones")
             con.execute("ALTER TABLE milestones_v2 RENAME TO milestones")
-        # Email-specific invitations are retired. This table was dedicated to that
-        # workflow; memberships and join requests live in separate tables.
-        con.execute("DROP TABLE IF EXISTS invitations")
+        # Email-specific invitation routes are retired. Keep legacy rows intact
+        # rather than deleting user data during startup; they are not accepted by
+        # the current join-code workflow.
         con.execute("""CREATE TABLE IF NOT EXISTS comments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,

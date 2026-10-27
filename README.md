@@ -7,10 +7,11 @@ StudyPilot is a collaborative student workspace for assignments and study groups
 - A high-level Overview with completion progress, focus tasks, and clickable Up Next, In Progress, Completed, and Overdue counts; the searchable Assignment Board has To Do, Doing, Done, and Overdue views, Mine/Group/All scope filtering, drag-and-drop, keyboard movement, and full history search. Overdue means incomplete work due before the viewer’s local date; those tasks also remain in their current status view.
 - Account registration, sign-in/out, unique case-insensitive usernames, profile photo upload, bio, theme, separate Profile and Settings views, and password settings. Photos are decoded, resized, re-encoded as WebP, and served only to the owner or connected classmates. Passwords are stored as salted scrypt hashes.
 - Private personal assignments and project membership checks on every shared-data API.
-- Shared group workspaces with owner, admin, and student roles; email-bound, expiring invitation links/codes; team assignment; and project milestones. Old editor memberships migrate to student; old viewer memberships remain read-only until an owner promotes them. Existing membership rows are preserved by additive migrations.
+- Shared group workspaces with owner, admin, and student roles; shareable join codes and owner-approved join requests; team assignment; and project milestones. Old editor memberships migrate to student; old viewer memberships remain read-only until an owner promotes them. Existing membership rows are preserved by additive migrations.
 - Group discussion and private 1:1 chat share a responsive Messages workspace with scoped Groups/Direct tabs, persisted unread counts, group avatars, grouped bubbles, date separators, scroll-position retention, jump-to-latest, replies with safe quoted previews, three-dot message actions, edit/delete, durable tombstones, and pinned-message search/jump in both group and private conversations.
 - Separate Overview, Assignment Board, Groups, Calendar, Messages, and Classmates views; username search, compact relationship summaries, incoming/outgoing/friend/blocked lists, cancellable requests, and in-app notifications with bulk select/read/unread/delete and clear-all actions.
-- Cryptographically random 70-bit group codes identify groups without granting membership. Users submit join requests, owners approve/reject/block them, and code rotation invalidates old codes. Existing one-time email invitations remain supported.
+- Cryptographically random 70-bit group codes identify groups without granting membership. Users submit join requests, owners approve/reject/block them, and code rotation invalidates old codes. The former email-invitation endpoints are retired; old `invitations` rows are retained by startup migrations for manual review but cannot be redeemed by the app.
+- Account deletion requires the current password and the typed confirmation `DELETE`. Group ownership must first be transferred or the group deleted. Personal assignments and private account data are erased; shared assignments, comments, group messages, direct-message history, and shared activity remain attributed to `Deleted User`.
 - Responsive layouts for mobile, tablet, and desktop, with loading, error, and empty states.
 - Additive SQLite migrations preserve existing task rows, backfill stable unique handles for existing accounts, and add nullable started/completed timestamps plus task status history. Historical timestamps are never inferred.
 
@@ -34,9 +35,9 @@ $env:COOKIE_SECURE = "false"
 uvicorn app.main:app --host 127.0.0.1 --port 8765
 ```
 
-Open <http://127.0.0.1:8765>, create two accounts with different email addresses, create a group, copy its `SP-...` code, submit it from the second account, then approve it as the owner. Search for the second account by username, send and accept a friend request, and test private/group chat, message actions, pinned messages, and profile preferences. Group codes expire only when rotated/replaced and never grant membership; pending legacy email invitations remain email-bound and expire after seven days. Stop the server with Ctrl+C. The preview database and its signing-key file remain in `data/`.
+Open <http://127.0.0.1:8765>, create two accounts with different email addresses, create a group, copy its `SP-...` code, submit it from the second account, then approve it as the owner. Search for the second account by username, send and accept a friend request, and test private/group chat, message actions, pinned messages, and profile preferences. Group codes do not grant membership; owners can rotate them at any time. Stop the server with Ctrl+C. The preview database and its signing-key file remain in `data/`.
 
-The first account created in a fresh database becomes the first user. For an existing database, the first registered account claims legacy unowned tasks, so register the existing owner before sharing the app address with classmates. New users only see their own assignments and projects to which they have been invited. Invitations are created in the app and returned as a link to share through the group’s usual channel; StudyPilot does not send email.
+The first account created in a fresh database becomes the first user. For an existing database, the first registered account claims legacy unowned tasks, so register the existing owner before sharing the app address with classmates. New users see their own assignments and groups they have joined. Share the group’s join code; each classmate must request access and wait for approval. StudyPilot does not send email.
 
 ## Run tests
 
@@ -74,7 +75,7 @@ The workflow uses strict SSH host-key checking and deploys only after tests pass
 - `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`
 - `GET/POST /api/tasks`, `GET/PATCH/DELETE /api/tasks/{id}`, `GET /api/tasks/{id}/history`
 - `GET/POST/PATCH/DELETE /api/projects`, `GET /api/projects/{id}`, join-code request/review/rotation endpoints, member-role/removal/ownership-transfer endpoints, and pinned group-message endpoints
-- `POST /api/projects/{id}/invites`, `POST /api/invitations/{token}/accept`, `POST /api/invitations/accept`
+- `DELETE /api/account` (requires the current password and confirmation string `DELETE`; blocked while the account owns a group)
 - `GET/POST /api/projects/{id}/milestones`, `PATCH /api/projects/{id}/milestones/{milestone_id}`
 - `GET/POST /api/projects/{id}/messages` (poll with `after_id`), `PATCH/DELETE /api/projects/{id}/messages/{message_id}`, owner-only pin/unpin
 - `GET /api/people`, `GET /api/people/search?q=handle`, private connected-classmate photo access, friend request create/list/respond endpoints, `GET/POST /api/direct/conversations`, direct message CRUD and pin/unpin endpoints
