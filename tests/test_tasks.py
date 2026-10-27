@@ -263,8 +263,13 @@ def test_auth_email_validation_duplicates_and_deleted_login_are_safe(tmp_path, m
         assert "email" in str(invalid_register.json()).lower()
         registered = client.post("/api/auth/register", json={"email":"student@example.edu","username":"student","name":"Student","password":"study-together-123"})
         assert registered.status_code == 201
+        assert client.get("/api/auth/username-availability", params={"username":"STUDENT"}).json() == {"available": False}
+        assert client.get("/api/auth/username-availability", params={"username":"fresh-handle"}).json() == {"available": True}
+        assert client.get("/api/auth/username-availability", params={"username":"xy"}).status_code == 422
         duplicate = client.post("/api/auth/register", json={"email":"student@example.edu","username":"other","name":"Other","password":"study-together-123"})
         assert duplicate.status_code == 409
+        username_collision = client.post("/api/auth/register", json={"email":"another@example.edu","username":"STUDENT","name":"Another","password":"study-together-123"})
+        assert username_collision.status_code == 409 and "username" in username_collision.json()["detail"]
         wrong_password = client.post("/api/auth/login", json={"email":"student@example.edu","password":"incorrect-password"})
         unknown_account = client.post("/api/auth/login", json={"email":"missing@example.edu","password":"incorrect-password"})
         assert wrong_password.status_code == unknown_account.status_code == 401
