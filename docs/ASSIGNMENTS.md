@@ -42,27 +42,19 @@ Set a persistent random `SESSION_SECRET` in the Dokku app configuration and `COO
 
 ## Task 2 — due October 30, 2026
 
-Task 2 observability work is postponed until October 30. The existing observability foundation below was not changed or started as part of the student-collaboration upgrade.
+Task 2 is due October 30, 2026. The complete local learning stack and verification steps are in [the HW3 observability runbook](HW3_OBSERVABILITY.md).
 
 **Goal:** extend the app with OpenTelemetry traces and metrics, Prometheus/Grafana dashboards, Loki log search, and Jaeger trace inspection.
 
-### Included foundation
+### Included implementation
 
-- The app can export FastAPI and SQLite spans and a bounded-cardinality HTTP request counter and duration histogram using OTLP when `OTEL_ENABLED=true`.
-- The Collector receives OTLP and routes traces to Jaeger and metrics to a Prometheus scrape endpoint.
-- The app writes structured request logs to a JSON Lines file; Promtail ships those logs to Loki.
-- A local Docker Compose stack provides Grafana, Prometheus, Loki, Promtail, the Collector, and Jaeger.
-- All host-published observability ports bind to loopback and are distinct from the known server ports.
+- Four bounded-cardinality HTTP metrics: request count, request duration, failed request count, and requests in progress.
+- FastAPI and SQLite spans sent over OTLP to Jaeger through the OpenTelemetry Collector.
+- Structured JSON Lines request logs shipped by Promtail to Loki and shown in Grafana.
+- A provisioned Grafana dashboard and Prometheus, Loki, and Jaeger data sources.
+- Loopback-only host ports, capped container memory, seven-day Prometheus/Loki retention, and a Compose project name and database volume separate from Dokku.
 
-### Suggested implementation order
-
-1. Run the local stack and check that app health remains green with telemetry enabled.
-2. Generate a few requests; find the HTTP metrics in Prometheus and the spans in Jaeger.
-3. Open Grafana and configure the bundled services as data sources; build a request-rate/latency panel and a logs panel.
-4. Add screenshots and a short explanation of each signal to the assignment report.
-5. Only if Dell capacity and network exposure have been reviewed, plan the observability services as a separate Dokku/server deployment. Do not put these dashboards on public ports.
-
-The Compose stack is a local learning setup. It is not configured for authenticated remote access, long-term retention policy, alerting, or production-grade resource limits.
+The runbook includes the Dell SSH setup, preflight checks, end-to-end signal verification, and live demo script. This Compose app is an isolated demo instance; monitoring the already deployed Dokku process would require a separate reviewed configuration change and is not done here.
 
 ## What needs the user's accounts or server access
 

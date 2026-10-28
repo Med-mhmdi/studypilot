@@ -10,13 +10,26 @@ processors:
   batch:
   memory_limiter:
     check_interval: 1s
-    limit_mib: 256
+    limit_mib: 192
+    spike_limit_mib: 48
+  attributes/drop_sensitive_url_data:
+    actions:
+      - key: http.target
+        action: delete
+      - key: http.url
+        action: delete
+      - key: url.full
+        action: delete
+      - key: url.query
+        action: delete
 
 exporters:
   debug:
     verbosity: basic
   prometheus:
     endpoint: 0.0.0.0:9464
+    resource_to_telemetry_conversion:
+      enabled: true
   otlp/jaeger:
     endpoint: jaeger:4317
     tls:
@@ -26,7 +39,7 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, batch]
+      processors: [memory_limiter, attributes/drop_sensitive_url_data, batch]
       exporters: [otlp/jaeger, debug]
     metrics:
       receivers: [otlp]

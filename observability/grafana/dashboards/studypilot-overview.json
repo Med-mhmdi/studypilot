@@ -22,8 +22,26 @@
       "type": "timeseries"
     },
     {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "reqps", "color": {"mode": "palette-classic"}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 4,
+      "targets": [{"expr": "sum by (http_response_status_code) (rate(studypilot_http_errors_total[5m]))", "refId": "A"}],
+      "title": "HTTP error requests per second",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "palette-classic"}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "id": 5,
+      "targets": [{"expr": "sum(studypilot_http_requests_in_flight)", "refId": "A"}],
+      "title": "Requests currently in progress",
+      "type": "timeseries"
+    },
+    {
       "datasource": {"type": "loki", "uid": "loki"},
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 8},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 16},
       "id": 3,
       "options": {"dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": false, "showLabels": true, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true},
       "targets": [{"expr": "{job=\"studypilot\"}", "refId": "A"}],
