@@ -50,6 +50,7 @@ def test_auth_accessibility_validation_autocomplete_and_mobile(tmp_path, monkeyp
 
             email = page.locator("#auth-form [name=email]")
             password = page.locator("#auth-form [name=password]")
+            assert page.locator("#auth-form").evaluate("el=>el.noValidate")
             expect(page.locator("#auth-screen")).to_be_visible()
             assert email.get_attribute("autocomplete") == "username"
             assert password.get_attribute("autocomplete") == "current-password"
@@ -74,20 +75,35 @@ def test_auth_accessibility_validation_autocomplete_and_mobile(tmp_path, monkeyp
             page.unroute("**/api/auth/login")
             page.locator("#auth-submit").click()
             expect(page.locator("#auth-error")).to_have_text("Incorrect email or password.")
+            assert page.locator("#auth-submit").inner_text() == "Sign in"
             page.locator("#auth-switch").click()
             expect(page.locator("#auth-error")).to_be_empty()
             assert email.get_attribute("autocomplete") == "email"
             assert password.get_attribute("autocomplete") == "new-password"
+            assert page.locator("#auth-submit").inner_text() == "Create account"
+            username = page.locator("#username-field input")
+            availability = page.locator("#auth-username-feedback")
+            username.fill("EXISTING")
+            expect(availability).to_have_text("Already taken. Choose another username.")
+            username.fill("fresh-handle")
+            expect(availability).to_have_text("Available")
             toggle.click()
             expect(password).to_have_attribute("type", "text")
             expect(toggle).to_have_attribute("aria-pressed", "true")
             expect(toggle).to_have_attribute("aria-label", "Hide password")
+            assert toggle.locator("svg path").count() == 2
             assert toggle.evaluate("el=>document.activeElement===el")
+            assert not toggle.evaluate("el=>el.matches(':focus-visible')")
+            assert toggle.evaluate("el=>getComputedStyle(el).outlineStyle==='none'")
             expect(password).to_have_value("wrong-password")
             toggle.click()
             expect(password).to_have_attribute("type", "password")
             expect(toggle).to_have_attribute("aria-pressed", "false")
             expect(password).to_have_value("wrong-password")
+            email.focus()
+            email.press("Tab")
+            password.press("Tab")
+            assert toggle.evaluate("el=>document.activeElement===el && el.matches(':focus-visible')")
 
             email.fill("existing@example.edu")
             page.locator("#name-field input").fill("Duplicate Student")

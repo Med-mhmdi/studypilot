@@ -74,6 +74,7 @@ const iconPaths = {
   trash: '<path d="M4 7h16M10 11v6m4-6v6M5 7l1 14h12l1-14M9 7V4h6v3"/>',
   upload: '<path d="M12 16V4m0 0L7 9m5-5 5 5M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/>',
   eye: '<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z"/><circle cx="12" cy="12" r="2.5"/>',
+  eyeOff: '<path d="m3 3 18 18M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 5.2A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a16.8 16.8 0 0 1-3.2 4.1M6.2 6.2C3.5 8.2 2 12 2 12s3.5 7 10 7a10 10 0 0 0 3-.5"/>',
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
   archive: '<path d="M3 4h18v4H3zM5 8v12h14V8M9 12h6"/>',
   chevronLeft: '<path d="m15 18-6-6 6-6"/>',
@@ -141,6 +142,7 @@ function addPasswordVisibilityToggles() {
     toggle.addEventListener('click', () => {
       const visible = input.type === 'password';
       input.type = visible ? 'text' : 'password';
+      setIcon(toggle, visible ? 'eyeOff' : 'eye');
       toggle.setAttribute('aria-label', visible ? 'Hide password' : 'Show password');
       toggle.setAttribute('aria-pressed', String(visible));
       toggle.title = visible ? 'Hide password' : 'Show password';
@@ -303,15 +305,19 @@ function authMode(register) {
   $('[name="name"]', form).required = register;
   $('[name="username"]', form).required = register;
   $('#auth-title').textContent = register ? 'Start your account.' : 'Welcome back.';
-  $('#auth-submit').textContent = register ? 'Create account →' : 'Sign in →';
+  $('#auth-submit').textContent = register ? 'Create account' : 'Sign in';
   $('#auth-switch').textContent = register ? 'Already have an account? Sign in' : 'New to StudyPilot? Create an account';
   $('#auth-error').textContent = '';
   const email = $('[name="email"]', form);
   email.autocomplete = register ? 'email' : 'username';
-  email.setCustomValidity('');
   $('#auth-email-error').hidden = true;
   $('#auth-email-error').textContent = '';
   email.removeAttribute('aria-invalid');
+  clearTimeout(usernameAvailabilityTimer);
+  usernameAvailabilityGeneration++;
+  usernameAvailabilityFeedback.hidden = true;
+  usernameAvailabilityFeedback.textContent = '';
+  usernameInput.removeAttribute('aria-invalid');
   const password = $('[name="password"]', form);
   password.autocomplete = register ? 'new-password' : 'current-password';
   password.minLength = register ? 10 : 1;
@@ -319,12 +325,14 @@ function authMode(register) {
 
 const authEmail = $('#auth-form [name="email"]');
 const authEmailError = $('#auth-email-error');
+const usernameInput = $('#auth-form [name="username"]');
+const usernameAvailabilityFeedback = $('#auth-username-feedback');
+let usernameAvailabilityTimer = null;
+let usernameAvailabilityGeneration = 0;
 function validateAuthEmail(show = false) {
-  authEmail.setCustomValidity('');
   let message = '';
   if (!authEmail.value.trim()) message = 'Enter your email address.';
   else if (authEmail.validity.typeMismatch || authEmail.value.length > 254) message = 'Enter a valid email address, such as name@example.com.';
-  if (message) authEmail.setCustomValidity(message);
   if (show || !message) {
     authEmailError.textContent = message;
     authEmailError.hidden = !message;
@@ -335,22 +343,65 @@ function validateAuthEmail(show = false) {
 }
 authEmail.addEventListener('input', () => validateAuthEmail(Boolean(authEmailError.textContent)));
 authEmail.addEventListener('blur', () => validateAuthEmail(true));
-authEmail.addEventListener('invalid', () => validateAuthEmail(true));
+
+function showUsernameAvailability(message, state = 'error') {
+  usernameAvailabilityFeedback.textContent = message;
+  usernameAvailabilityFeedback.hidden = !message;
+  usernameAvailabilityFeedback.dataset.state = state;
+  usernameInput.toggleAttribute('aria-invalid', state === 'error');
+  if (message) usernameInput.setAttribute('aria-describedby', 'auth-username-feedback');
+  else usernameInput.removeAttribute('aria-describedby');
+}
+
+async function checkUsernameAvailability() {
+  const username = usernameInput.value.trim();
+  const generation = ++usernameAvailabilityGeneration;
+  if (!username) { showUsernameAvailability('Enter a username.', 'error'); return false; }
+  if (username.length < 3 || username.length > 24 || !/^[A-Za-z0-9._-]+$/.test(username)) {
+    showUsernameAvailability('Use 3–24 letters, numbers, periods, underscores, or hyphens.', 'error');
+    return false;
+  }
+  showUsernameAvailability('Checking availability…', 'pending');
+  try {
+    const result = await api(`/api/auth/username-availability?username=${encodeURIComponent(username)}`);
+    if (generation !== usernameAvailabilityGeneration) return false;
+    showUsernameAvailability(result.available ? 'Available' : 'Already taken. Choose another username.', result.available ? 'available' : 'error');
+    return Boolean(result.available);
+  } catch {
+    if (generation === usernameAvailabilityGeneration) showUsernameAvailability('Could not check availability. Check your connection and try again.', 'error');
+    return false;
+  }
+}
+
+usernameInput.addEventListener('input', () => {
+  clearTimeout(usernameAvailabilityTimer);
+  usernameAvailabilityGeneration++;
+  showUsernameAvailability('', 'idle');
+  if ($('#auth-form').dataset.register !== 'true' || !usernameInput.value.trim()) return;
+  usernameAvailabilityTimer = setTimeout(() => checkUsernameAvailability(), 350);
+});
 
 $('#auth-switch').addEventListener('click', () => authMode($('#auth-form').dataset.register !== 'true'));
 $('#auth-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const registering = event.currentTarget.dataset.register === 'true';
+  const form = event.currentTarget;
+  const registering = form.dataset.register === 'true';
   $('#auth-error').textContent = '';
   if (!validateAuthEmail(true)) { authEmail.focus(); return; }
-  const password = $('[name="password"]', event.currentTarget);
+  const password = $('[name="password"]', form);
   if (password.value.length < (registering ? 10 : 1)) {
     password.focus();
     password.reportValidity();
     return;
   }
+  const otherInvalid = [...form.elements].find(field => field !== authEmail && !field.disabled && !field.checkValidity());
+  if (otherInvalid) { otherInvalid.reportValidity(); otherInvalid.focus(); return; }
+  if (registering) {
+    clearTimeout(usernameAvailabilityTimer);
+    if (!await checkUsernameAvailability()) { usernameInput.focus(); return; }
+  }
   try {
-    const formData = new FormData(event.currentTarget);
+    const formData = new FormData(form);
     const payload = registering
       ? { email: formData.get('email'), name: formData.get('name'), username: formData.get('username'), password: formData.get('password') }
       : { email: formData.get('email'), password: formData.get('password') };

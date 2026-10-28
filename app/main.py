@@ -193,6 +193,13 @@ def register(body: Register, request: Request):
         return _profile(con.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
 
 
+@app.get("/api/auth/username-availability")
+def username_availability(username: str = Query(min_length=3, max_length=24, pattern=r"^[A-Za-z0-9._-]+$")):
+    with db.connect() as con:
+        taken = con.execute("SELECT 1 FROM users WHERE username=? COLLATE NOCASE AND deleted_at IS NULL", (username.strip(),)).fetchone()
+    return {"available": taken is None}
+
+
 @app.post("/api/auth/login")
 def login(body: Login, request: Request):
     with db.connect() as con:
