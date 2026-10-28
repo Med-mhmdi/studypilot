@@ -1,8 +1,41 @@
+import json
+import logging
+from io import StringIO
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from app.telemetry import request_metrics
+from app.telemetry import configure_telemetry
+
+
+def test_json_app_logs_are_written_to_stdout_and_file_once(tmp_path, monkeypatch):
+    output = StringIO()
+    monkeypatch.setattr("sys.stdout", output)
+    monkeypatch.setenv("LOG_PATH", str(tmp_path / "app.jsonl"))
+    monkeypatch.setenv("OTEL_ENABLED", "false")
+    logger = logging.getLogger("studypilot")
+    before = list(logger.handlers)
+    for handler in before:
+        logger.removeHandler(handler)
+
+    try:
+        configure_telemetry(FastAPI())
+        configure_telemetry(FastAPI())
+        logger.info("http_request method=GET route=/health status=200")
+
+        stdout_rows = [json.loads(line) for line in output.getvalue().splitlines()]
+        file_rows = [json.loads(line) for line in (tmp_path / "app.jsonl").read_text().splitlines()]
+        assert stdout_rows[-1]["message"] == "http_request method=GET route=/health status=200"
+        assert file_rows[-1] == stdout_rows[-1]
+        assert sum(getattr(handler, "_studypilot_json_stdout", False) for handler in logger.handlers) == 1
+    finally:
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            handler.close()
+        for handler in before:
+            logger.addHandler(handler)
 
 
 class RecordingInstrument:

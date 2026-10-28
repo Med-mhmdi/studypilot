@@ -4,16 +4,19 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-APP = "http://127.0.0.1:18080"
+APP = os.getenv("APP_URL", "http://127.0.0.1:18080").rstrip("/")
 PROMETHEUS = "http://127.0.0.1:19090"
 JAEGER = "http://127.0.0.1:16687"
-LOKI = "http://127.0.0.1:13100"
+LOKI = "http://127.0.0.1:13101"
+SERVICE = os.getenv("OTEL_SERVICE_NAME", "studypilot-demo")
+LOG_SELECTOR = os.getenv("LOKI_SELECTOR", '{service="studypilot-demo"}')
 TIMEOUT_SECONDS = 120
 
 
@@ -60,12 +63,13 @@ def main() -> None:
             raise
 
     wait_for("Prometheus is scraping the OpenTelemetry Collector", lambda: any(float(row["value"][1]) > 0 for row in query_prometheus('up{job="otel-collector"}')))
-    wait_for("HTTP request counter and duration histogram", lambda: bool(query_prometheus("studypilot_http_requests_total")) and bool(query_prometheus("studypilot_http_duration_seconds_count")))
-    wait_for("HTTP error counter", lambda: bool(query_prometheus("studypilot_http_errors_total")))
-    wait_for("in-flight request metric", lambda: bool(query_prometheus("studypilot_http_requests_in_flight")))
+    selector = f'{{service_name="{SERVICE}"}}'
+    wait_for("HTTP request counter and duration histogram", lambda: bool(query_prometheus(f"studypilot_http_requests_total{selector}")) and bool(query_prometheus(f"studypilot_http_duration_seconds_count{selector}")))
+    wait_for("HTTP error counter", lambda: bool(query_prometheus(f"studypilot_http_errors_total{selector}")))
+    wait_for("in-flight request metric", lambda: bool(query_prometheus(f"studypilot_http_requests_in_flight{selector}")))
 
     def has_trace() -> bool:
-        result = get_json(f"{JAEGER}/api/traces?{urlencode({'service': 'studypilot', 'lookback': '1h', 'limit': 20})}")
+        result = get_json(f"{JAEGER}/api/traces?{urlencode({'service': SERVICE, 'lookback': '1h', 'limit': 20})}")
         return bool(result.get("data"))
 
     wait_for("Jaeger received a StudyPilot trace", has_trace)
@@ -73,13 +77,13 @@ def main() -> None:
     def has_logs() -> bool:
         end = time.time_ns()
         start = end - 15 * 60 * 1_000_000_000
-        query = urlencode({"query": '{job="studypilot"}', "limit": "20", "direction": "BACKWARD", "start": str(start), "end": str(end)})
+        query = urlencode({"query": LOG_SELECTOR, "limit": "20", "direction": "BACKWARD", "start": str(start), "end": str(end)})
         result = get_json(f"{LOKI}/loki/api/v1/query_range?{query}")
         streams = result.get("data", {}).get("result", [])
         return any(stream.get("values") for stream in streams)
 
     wait_for("Loki received StudyPilot JSON request logs", has_logs)
-    print("Observability smoke check complete. Review the dashboard and trace in a browser before the live demo.")
+    print(f"Observability smoke check complete for {SERVICE}. Review the dashboard and trace in a browser before the live demo.")
 
 
 if __name__ == "__main__":

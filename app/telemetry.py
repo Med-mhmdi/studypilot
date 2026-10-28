@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 
 
@@ -16,11 +17,17 @@ def configure_telemetry(app) -> None:
         def format(self, record):
             return json.dumps({"level": record.levelname, "message": record.getMessage()})
 
-    file_handler = logging.FileHandler(log_path, encoding="utf-8")
-    file_handler.setFormatter(JsonFormatter())
+    formatter = JsonFormatter()
     app_logger = logging.getLogger("studypilot")
     app_logger.setLevel(logging.INFO)
+    if not any(getattr(handler, "_studypilot_json_stdout", False) for handler in app_logger.handlers):
+        stdout_handler = logging.StreamHandler(sys.stdout)
+        stdout_handler.setFormatter(formatter)
+        stdout_handler._studypilot_json_stdout = True
+        app_logger.addHandler(stdout_handler)
     if not any(isinstance(handler, logging.FileHandler) and handler.baseFilename == str(log_path.resolve()) for handler in app_logger.handlers):
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setFormatter(formatter)
         app_logger.addHandler(file_handler)
 
     if os.getenv("OTEL_ENABLED", "false").lower() not in {"1", "true", "yes"}:
@@ -39,7 +46,11 @@ def configure_telemetry(app) -> None:
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
     provider = TracerProvider(
-        resource=Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "studypilot")})
+        resource=Resource.create({
+            "service.name": os.getenv("OTEL_SERVICE_NAME", "studypilot-demo"),
+            "service.namespace": "studypilot",
+            "deployment.environment.name": os.getenv("DEPLOYMENT_ENVIRONMENT", "development"),
+        })
     )
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
     trace.set_tracer_provider(provider)

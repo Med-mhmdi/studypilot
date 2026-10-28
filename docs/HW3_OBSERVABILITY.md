@@ -1,126 +1,199 @@
 # HW3: StudyPilot observability
 
-**Due:** October 30, 2026  
-**Signals:** FastAPI metrics → Prometheus → Grafana; FastAPI/SQLite traces → OpenTelemetry Collector → Jaeger; JSON request logs → Promtail → Loki → Grafana.
+**Signals:** production FastAPI and SQLite metrics/traces → authenticated OpenTelemetry Collector → Prometheus/Grafana and Jaeger; Dokku process logs → Dokku Vector → Loki/Grafana.
 
-This is a separate Compose project named `studypilot-observability`. It builds a demo copy of the app and gives it a new `studypilot-observability_studypilot-data` volume. It does not use the Dokku app, its database, its signing key, or its environment. The existing Dokku service is left running and unchanged. To monitor that service itself later, first review a separate plan for adding telemetry settings to Dokku.
+## Architecture and status
 
-All published ports bind to the Dell's `127.0.0.1`. Do not change them to `0.0.0.0` or add router port forwarding. Prometheus retains up to seven days/1 GB; Loki retains seven days. Container memory caps total about 2.5 GB, leaving most of the Dell's 11 GB available for its existing services.
+The Compose app remains a disposable demo with its own SQLite volume. The real Dokku app can export to the same backends as the distinct service studypilot-production. Grafana metrics and logs have a service selector so demo data is not confused with production; Jaeger lists the service under its own name.
 
-Traces keep route templates and status codes but the Collector removes raw URL/query attributes before sending spans to Jaeger. The app does not add request bodies or cookies to its own logs.
+Production ingestion ports bind only to the Dell Docker bridge gateway. Dokku reaches the Collector using host.docker.internal mapped to Docker's host-gateway. A separate gRPC receiver requires a bearer token. The internal Compose receiver remains for the demo. Dokku's built-in Vector integration ships only the studypilot app's process logs through a token-protected, push-only Loki gateway with fixed service/source labels. Loki's query API is not published through that gateway. These host-local bridge hops use HTTP rather than TLS; the token and data stay on Dell's Docker networks. Do not use this setup if that network is shared with untrusted workloads. This Compose project does not mount the Docker socket.
 
-## 1. Connect to Dell and check capacity
+The app writes JSON request logs to stdout and its existing JSONL file. Dokku can collect stdout while the demo continues using Promtail. Uvicorn's raw access log is disabled because it can include query strings; app request logs use route templates and do not include bodies, cookies, or user identifiers. FastAPI and SQLite are instrumented once in app.telemetry; do not also use opentelemetry-instrument or a second FastAPI/SQLite agent.
 
-From Windows PowerShell, connect with the same SSH account normally used on the Dell:
+Prometheus and Loki retain seven days; Prometheus also caps its TSDB at 1 GB. Containers have memory caps. Jaeger memory storage is capped at 5,000 traces and is volatile. This is a single-host diagnostic stack, not durable telemetry storage.
 
-```powershell
+**Production has not been connected or validated.** PR #4 is a draft. This branch has not been merged, deployed to Dokku, or applied to its configuration, database, session key, photos, or domains. GitHub Actions deploys only after a push to main and successful tests. Merge and rollout require separate approval.
+
+## Demo stack
+
+Use a separate checkout, never the Dokku deployment checkout:
+
+~~~sh
 ssh <your-dell-user>@dexter
-```
-
-On Dell, locate the existing StudyPilot checkout and confirm it is not the path you will use for this stack. Pick a separate directory (the examples use `~/studypilot-hw3`) and check free memory, disk, Docker, and port availability before starting anything:
-
-```sh
+mkdir -p ~/studypilot-hw3
+cd ~/studypilot-hw3
 free -h
 df -h "$HOME"
 docker info --format '{{.ServerVersion}}'
-ss -ltn | grep -E ':(13000|13100|14317|14318|14319|14320|16687|18080|19090)\b' || true
-```
+docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}'
+ss -ltn | grep -E ':(13000|13100|13101|14321|16687|18080|19090)\b' || true
+~~~
 
-If a port is already in use, stop and investigate before proceeding. These commands do not stop or modify any existing service.
+Stop if this is the production checkout, no Docker bridge gateway is reported, or a port is already occupied. Investigate first.
 
-## 2. Get the reviewed feature branch
+Generate local credentials. The token is ignored by Git, but Docker administrators can read container environment values:
 
-After reviewing this branch/PR, fetch it on Dell. Use a separate checkout so the existing Dokku deploy checkout and files are not changed:
-
-```sh
-mkdir -p ~/studypilot-hw3
-cd ~/studypilot-hw3
-git clone --branch feature/hw3-observability https://github.com/Med-mhmdi/studypilot.git .
-```
-
-If the directory is already a checkout of this branch, update it with `git pull --ff-only`. Use your normal authenticated GitHub transport if the repository asks you to sign in. Do not run Git commands in the Dokku application's server directory.
-
-## 3. Preflight, set a Grafana password, and start
-
-Make a private local environment file. The password is required and is not stored in Git:
-
-```sh
+~~~sh
 cd ~/studypilot-hw3
 umask 077
-printf 'GRAFANA_PASSWORD=%s\n' "$(openssl rand -hex 24)" > .env.observability
+BRIDGE_IP="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
+printf 'GRAFANA_PASSWORD=%s\nOTEL_INGEST_TOKEN=%s\nDOCKER_HOST_BRIDGE_IP=%s\n' \
+  "$(openssl rand -hex 24)" "$(openssl rand -hex 32)" "$BRIDGE_IP" > .env.observability
 docker compose --env-file .env.observability -f compose.observability.yml config --quiet
 docker compose --env-file .env.observability -f compose.observability.yml build app
-```
-
-The `config --quiet` step is the Compose preflight; it checks the merged configuration without starting containers. If the build succeeds, start only this isolated stack:
-
-```sh
 docker compose --env-file .env.observability -f compose.observability.yml up -d
 docker compose --env-file .env.observability -f compose.observability.yml ps
 curl --fail http://127.0.0.1:18080/health
-```
+~~~
 
-Expected health response: `{"status":"ok"}`. Check logs if a service is not `Up`:
+The demo has a separate SQLite volume; no Dokku path is mounted. Dashboard/query ports remain loopback-only. Grafana is at http://127.0.0.1:13000. Remote access uses an SSH tunnel:
 
-```sh
-docker compose --env-file .env.observability -f compose.observability.yml logs --tail=80
-```
-
-## 4. Open the dashboards safely from your laptop
-
-Leave the SSH connection above open. In a second PowerShell window, open a local tunnel to the Dell:
-
-```powershell
+~~~powershell
 ssh -N -L 13000:127.0.0.1:13000 -L 16687:127.0.0.1:16687 -L 19090:127.0.0.1:19090 <your-dell-user>@dexter
-```
+~~~
 
-Then use these addresses on your laptop:
+Run the demo check and select studypilot-demo in the Grafana service picker:
 
-- Grafana: <http://127.0.0.1:13000> (user `admin`; use the password from Dell's `.env.observability`)
-- Jaeger: <http://127.0.0.1:16687>
-- Prometheus (optional): <http://127.0.0.1:19090>
-
-The browser reaches the loopback-bound services through SSH; nothing needs to be opened to the LAN or internet.
-
-## 5. Verify all signals
-
-On Dell, run the end-to-end smoke check. It sends ordinary health and 404 requests to the demo copy, then waits for Prometheus, Jaeger, and Loki to receive them:
-
-```sh
+~~~sh
 cd ~/studypilot-hw3
 python3 scripts/verify_observability.py
-```
+~~~
 
-It should print PASS for Prometheus scraping and the four HTTP metrics, Jaeger traces for `studypilot`, and request logs in Loki. The first run may take up to two minutes while the collector exports and Prometheus scrapes. Investigate any FAIL before the demo.
+It sends GET requests to the demo health route and an intentionally missing route.
 
-You can also show the live data manually:
+## Production rollout — only after code review and separate approval
 
-- In Prometheus, query `studypilot_http_requests_total`, `studypilot_http_duration_seconds_count`, `studypilot_http_errors_total`, and `studypilot_http_requests_in_flight`.
-- In Jaeger, select service `studypilot`, click **Find Traces**, and open a `/health` trace. Its spans include the FastAPI server span and SQLite query spans.
-- In Grafana, open **Dashboards → StudyPilot overview**. It has request rate, p95 latency, error rate, in-flight requests, and recent JSON logs.
-- In Grafana **Explore**, select Loki and run `{job="studypilot"}`.
+These commands are a future approved rollout plan and have not been run. App configuration requires a Dokku redeploy; expect a brief restart/downtime for the current single-container setup. Preserve the current GitHub Actions main-only deployment.
 
-## 6. Short live demo (simple English)
+### 1. Read-only preflight
 
-1. “This is a separate demo copy. The real Dokku app and its database are not connected.”
-2. Generate a successful and a failed request on Dell:
-   ```sh
-   curl -s http://127.0.0.1:18080/health
-   curl -s -o /dev/null -w 'status=%{http_code}\n' http://127.0.0.1:18080/not-a-real-page
-   ```
-3. “Prometheus collects four measurements: how many requests arrive, how long they take, how many fail, and how many are happening now.” Show the StudyPilot overview dashboard.
-4. “Jaeger shows the path of one request through FastAPI and SQLite.” Open a `/health` trace.
-5. “Loki lets us search the request log.” In Grafana Explore, show `{job="studypilot"}` and the 404 line.
-6. “Grafana brings the measurements and logs together. The dashboards are available through my SSH connection only.”
+~~~sh
+ssh <your-dell-user>@dexter
+sudo dokku version
+sudo dokku apps:list
+sudo dokku ps:report studypilot
+sudo dokku storage:report studypilot
+sudo dokku network:report studypilot
+sudo dokku docker-options:list studypilot --phase deploy
+sudo dokku logs:report studypilot
+sudo dokku network:exists bridge
+docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}'
+docker ps --filter name=vector --format '{{.Names}} {{.Status}}'
+~~~
 
-**ملاحظات بالعربية:** هذه نسخة تجريبية منفصلة عن تطبيق Dokku وقاعدة بياناته. افتح Grafana عبر نفق SSH، ثم اعرض المقاييس الأربعة، وتتبع `/health` في Jaeger، وسجلّات الطلبات في Loki. لا نفتح المنافذ للإنترنت.
+Stop and review if app name, scheduler, storage, bind mounts, Docker options, or the per-app Vector sink differ. Never overwrite an existing sink. Confirm the host firewall does not expose the Docker bridge subnet to untrusted interfaces. Do not publish OTLP/Loki on 0.0.0.0, a LAN address, or an Internet-facing proxy.
 
-## Stop and clean up
+### 2. Back up data and configuration
 
-To stop containers while keeping the demo database and dashboards for a later run:
+Verify the active container, DB path, and mounts. Profile photos are stored in SQLite, so the SQLite online backup preserves database rows and photos. Preserve the session key and Dokku config:
 
-```sh
-docker compose --env-file .env.observability -f compose.observability.yml down
-```
+~~~sh
+umask 077
+BACKUP_DIR="$HOME/studypilot-before-observability-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -m 700 "$BACKUP_DIR"
+APP_CID="$(docker ps --filter name=studypilot.web --format '{{.ID}}' | head -n 1)"
+test -n "$APP_CID"
+docker inspect "$APP_CID" --format '{{json .Mounts}}' > "$BACKUP_DIR/mounts.json"
+DB_PATH="$(docker exec "$APP_CID" python -c 'import os; print(os.getenv("DB_PATH", "data/studypilot.db"))')"
+docker exec "$APP_CID" python -c 'import os,sqlite3; p=os.getenv("DB_PATH", "data/studypilot.db"); src=sqlite3.connect(p); dst=sqlite3.connect("/tmp/studypilot-before-observability.db"); src.backup(dst); dst.close(); src.close()'
+docker cp "$APP_CID":/tmp/studypilot-before-observability.db "$BACKUP_DIR/studypilot.db"
+docker exec "$APP_CID" python -c 'import os,shutil; p=os.getenv("DB_PATH", "data/studypilot.db"); key=os.path.splitext(p)[0]+".session-key"; shutil.copy2(key,"/tmp/studypilot-session-key.backup") if os.path.isfile(key) else None'
+docker cp "$APP_CID":/tmp/studypilot-session-key.backup "$BACKUP_DIR/" 2>/dev/null || true
+sudo dokku config:show studypilot > "$BACKUP_DIR/dokku-config.txt"
+sudo dokku storage:report studypilot > "$BACKUP_DIR/dokku-storage.txt"
+~~~
 
-Do not add `-v`: that would delete this demo stack's volumes. The existing Dokku app is unaffected either way, but retaining the demo data makes the next presentation quicker.
+The config backup contains secrets. Keep it private, never paste or commit it, and copy it off Dell using the existing encrypted backup process. If storage reports other persistent mounts, archive their exact source paths too. Verify the SQLite copy:
+
+~~~sh
+python3 - "$BACKUP_DIR/studypilot.db" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+print("integrity:", con.execute("PRAGMA integrity_check").fetchone()[0])
+print("users:", con.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+con.close()
+PY
+~~~
+
+Stop if the backup is incomplete, has an integrity error, or cannot be restored using the established backup procedure.
+
+### 3. Start the receiver services
+
+In the separate observability checkout, verify the private .env.observability file contains GRAFANA_PASSWORD, OTEL_INGEST_TOKEN, and the exact Docker bridge gateway. Do not print or share the token. Confirm Collector port 14321 and Loki push port 13100 bind only to that gateway; the Loki query port 13101 and other query ports stay on 127.0.0.1.
+
+~~~sh
+cd ~/studypilot-hw3
+docker compose --env-file .env.observability -f compose.observability.yml config --quiet
+docker compose --env-file .env.observability -f compose.observability.yml up -d otel-collector loki loki-gateway prometheus grafana jaeger
+docker compose --env-file .env.observability -f compose.observability.yml ps
+~~~
+
+Do not run compose down, down -v, or start the Compose app as part of production rollout. Keep the authenticated receiver on Collector port 4319, published only as gateway port 14321. The demo uses the separate internal receiver on 4317.
+
+### 4. Configure Dokku (triggers redeploy)
+
+Check the app has no conflicting host mapping. The alias is required because localhost inside a Dokku container is that container:
+
+~~~sh
+sudo dokku docker-options:add studypilot deploy "--add-host=host.docker.internal:host-gateway"
+read -rsp 'Paste the OTEL ingest token from .env.observability: ' OTEL_TOKEN
+printf '\n'
+sudo dokku config:set --no-restart studypilot \
+  OTEL_ENABLED=true \
+  OTEL_SERVICE_NAME=studypilot-production \
+  DEPLOYMENT_ENVIRONMENT=production \
+  OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:14321 \
+  "OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer%20$OTEL_TOKEN"
+unset OTEL_TOKEN
+~~~
+
+The token is stored in Dokku config and visible to Docker/Dokku administrators. Keep the endpoint on Dell's private Docker bridge. The receiver checks the bearer token. Do not add a second OTel agent or instrument FastAPI twice.
+
+For actual Dokku process logs, first confirm there is no existing app Vector sink. Then configure this app only and start Dokku's existing Vector shipper if needed. The same random token protects OTLP and Loki ingestion. Replace the gateway placeholder with the discovered IP:
+
+~~~sh
+read -rsp 'Paste the OTEL ingest token from .env.observability: ' OTEL_TOKEN
+printf '\n'
+sudo dokku logs:set studypilot vector-sink \
+  "loki://?endpoint=http%3A//<DOCKER_BRIDGE_GATEWAY_IP>%3A13100&auth%5Bstrategy%5D=bearer&auth%5Btoken%5D=$OTEL_TOKEN&labels%5Bservice%5D=studypilot-production&labels%5Bsource%5D=dokku"
+unset OTEL_TOKEN
+sudo dokku logs:vector-start
+sudo dokku logs:vector-logs --num 30
+~~~
+
+Do not change global Vector networks, sinks, or Docker log retention. App stdout includes JSON request lines from app.telemetry; Vector also ships ordinary process output.
+
+### 5. Validate the real app
+
+After the approved deploy, confirm the normal domain responds and compare current DB, photo, session, and domain settings with preflight/backup records. Then run read-only checks from Dell, replacing the URL with the actual HTTPS domain:
+
+~~~sh
+cd ~/studypilot-hw3
+APP_URL=https://<studypilot-domain> \
+OTEL_SERVICE_NAME=studypilot-production \
+LOKI_SELECTOR='{service="studypilot-production",source="dokku"}' \
+python3 scripts/verify_observability.py
+~~~
+
+The script sends four read-only /health GETs and one GET to a nonexistent path, then checks production-only metrics, a Jaeger trace for studypilot-production, and a Loki log with the Dokku label. This proves the deployed endpoint emitted signals; demo traffic is not counted. Open the production service in Grafana and confirm test timestamps. A normal browser GET to / can then be shown in metrics, Jaeger, and Loki.
+
+If validation fails, do not claim production observability works. Check Dokku process logs, Vector logs, and Collector logs. Fix connectivity, auth, or labels before relying on dashboards.
+
+### 6. Rollback
+
+If the app is unhealthy after an approved deploy, remove telemetry settings without restarting, remove the host mapping, and restore the previous release through the approved GitHub Actions path. The production database, photos, session key, and domains remain in place:
+
+~~~sh
+sudo dokku config:unset --no-restart studypilot \
+  OTEL_ENABLED OTEL_SERVICE_NAME DEPLOYMENT_ENVIRONMENT \
+  OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS
+sudo dokku docker-options:remove studypilot deploy "--add-host=host.docker.internal:host-gateway"
+~~~
+
+Revert through the existing main/GitHub Actions deployment process after approval; do not push directly to Dokku. Clear the Vector sink only if this rollout added it:
+
+~~~sh
+sudo dokku logs:set studypilot vector-sink
+~~~
+
+Retain Compose demo volumes. Never use compose down -v; production is not part of this Compose project.

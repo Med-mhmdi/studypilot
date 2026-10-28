@@ -11,6 +11,8 @@ scrape_configs:
       - targets: [localhost]
         labels:
           job: studypilot
+          service: studypilot-demo
+          source: compose
           __path__: /var/log/studypilot/*.jsonl
     pipeline_stages:
       - json:

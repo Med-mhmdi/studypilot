@@ -1,0 +1,19 @@
+server {
+    listen 3100;
+
+    location = /loki/api/v1/push {
+        if ($request_method != POST) {
+            return 405;
+        }
+        if ($http_authorization != "Bearer $OTEL_INGEST_TOKEN") {
+            return 401;
+        }
+
+        proxy_set_header Authorization "";
+        proxy_pass http://loki:3100;
+    }
+
+    location / {
+        return 404;
+    }
+}
