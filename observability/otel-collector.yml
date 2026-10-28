@@ -5,34 +5,52 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
+  otlp/production:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4319
+        auth:
+          authenticator: bearertokenauth/production
+
+extensions:
+  bearertokenauth/production:
+    token: ${env:OTEL_INGEST_TOKEN}
 
 processors:
   batch:
   memory_limiter:
     check_interval: 1s
-    limit_mib: 256
+    limit_mib: 192
+    spike_limit_mib: 48
+  attributes/drop_sensitive_url_data:
+    actions:
+      - key: http.target
+        action: delete
+      - key: http.url
+        action: delete
+      - key: url.full
+        action: delete
+      - key: url.query
+        action: delete
 
 exporters:
-  debug:
-    verbosity: basic
   prometheus:
     endpoint: 0.0.0.0:9464
+    resource_to_telemetry_conversion:
+      enabled: true
   otlp/jaeger:
     endpoint: jaeger:4317
     tls:
       insecure: true
 
 service:
+  extensions: [bearertokenauth/production]
   pipelines:
     traces:
-      receivers: [otlp]
-      processors: [memory_limiter, batch]
-      exporters: [otlp/jaeger, debug]
+      receivers: [otlp, otlp/production]
+      processors: [memory_limiter, attributes/drop_sensitive_url_data, batch]
+      exporters: [otlp/jaeger]
     metrics:
-      receivers: [otlp]
+      receivers: [otlp, otlp/production]
       processors: [memory_limiter, batch]
-      exporters: [prometheus, debug]
-    logs:
-      receivers: [otlp]
-      processors: [memory_limiter, batch]
-      exporters: [debug]
+      exporters: [prometheus]

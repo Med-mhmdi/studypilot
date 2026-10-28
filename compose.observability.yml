@@ -1,10 +1,14 @@
+name: studypilot-observability
+
 services:
   app:
     build: .
+    mem_limit: 384m
     environment:
       DB_PATH: /app/data/studypilot.db
       OTEL_ENABLED: "true"
-      OTEL_SERVICE_NAME: studypilot
+      OTEL_SERVICE_NAME: studypilot-demo
+      DEPLOYMENT_ENVIRONMENT: demo
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       LOG_PATH: /var/log/studypilot/studypilot.jsonl
     ports:
@@ -17,18 +21,22 @@ services:
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.123.0
+    mem_limit: 256m
+    environment:
+      OTEL_INGEST_TOKEN: ${OTEL_INGEST_TOKEN:?Set OTEL_INGEST_TOKEN in .env.observability}
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     volumes:
       - ./observability/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
     ports:
-      - "127.0.0.1:14317:4317"
-      - "127.0.0.1:14318:4318"
+      # Reachable only through the host's private Docker bridge address.
+      - "${DOCKER_HOST_BRIDGE_IP:-127.0.0.1}:14321:4319"
     depends_on:
       - jaeger
 
   prometheus:
     image: prom/prometheus:v3.2.1
-    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus"]
+    mem_limit: 512m
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=7d", "--storage.tsdb.retention.size=1GB"]
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -39,9 +47,10 @@ services:
 
   grafana:
     image: grafana/grafana:11.5.2
+    mem_limit: 384m
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-change-me-local}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?Set GRAFANA_PASSWORD in .env.observability}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - grafana-data:/var/lib/grafana
@@ -56,15 +65,32 @@ services:
 
   loki:
     image: grafana/loki:3.4.2
+    mem_limit: 384m
     command: ["-config.file=/etc/loki/config.yml"]
     volumes:
       - ./observability/loki.yml:/etc/loki/config.yml:ro
       - loki-data:/loki
     ports:
-      - "127.0.0.1:13100:3100"
+      # Local-only query endpoint for the Dell smoke check and operators.
+      - "127.0.0.1:13101:3100"
+
+  loki-gateway:
+    image: nginx:1.31.8-alpine3.24-slim
+    mem_limit: 64m
+    environment:
+      OTEL_INGEST_TOKEN: ${OTEL_INGEST_TOKEN:?Set OTEL_INGEST_TOKEN in .env.observability}
+      NGINX_ENVSUBST_FILTER: "^OTEL_INGEST_TOKEN$"
+    volumes:
+      - ./observability/loki-gateway.conf.template:/etc/nginx/templates/default.conf.template:ro
+    ports:
+      # Push-only, token-protected entry point for Dokku Vector.
+      - "${DOCKER_HOST_BRIDGE_IP:-127.0.0.1}:13100:3100"
+    depends_on:
+      - loki
 
   promtail:
     image: grafana/promtail:3.4.2
+    mem_limit: 128m
     command: ["-config.file=/etc/promtail/config.yml"]
     volumes:
       - ./observability/promtail.yml:/etc/promtail/config.yml:ro
@@ -75,10 +101,12 @@ services:
 
   jaeger:
     image: jaegertracing/jaeger:2.4.0
+    mem_limit: 512m
+    command: ["--config=/etc/jaeger/config.yml"]
+    volumes:
+      - ./observability/jaeger.yml:/etc/jaeger/config.yml:ro
     ports:
       - "127.0.0.1:16687:16686"
-      - "127.0.0.1:14319:4317"
-      - "127.0.0.1:14320:4318"
 
 volumes:
   app-logs:

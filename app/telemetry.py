@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 
 
@@ -16,11 +17,17 @@ def configure_telemetry(app) -> None:
         def format(self, record):
             return json.dumps({"level": record.levelname, "message": record.getMessage()})
 
-    file_handler = logging.FileHandler(log_path, encoding="utf-8")
-    file_handler.setFormatter(JsonFormatter())
+    formatter = JsonFormatter()
     app_logger = logging.getLogger("studypilot")
     app_logger.setLevel(logging.INFO)
+    if not any(getattr(handler, "_studypilot_json_stdout", False) for handler in app_logger.handlers):
+        stdout_handler = logging.StreamHandler(sys.stdout)
+        stdout_handler.setFormatter(formatter)
+        stdout_handler._studypilot_json_stdout = True
+        app_logger.addHandler(stdout_handler)
     if not any(isinstance(handler, logging.FileHandler) and handler.baseFilename == str(log_path.resolve()) for handler in app_logger.handlers):
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setFormatter(formatter)
         app_logger.addHandler(file_handler)
 
     if os.getenv("OTEL_ENABLED", "false").lower() not in {"1", "true", "yes"}:
@@ -39,7 +46,11 @@ def configure_telemetry(app) -> None:
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
     provider = TracerProvider(
-        resource=Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "studypilot")})
+        resource=Resource.create({
+            "service.name": os.getenv("OTEL_SERVICE_NAME", "studypilot-demo"),
+            "service.namespace": "studypilot",
+            "deployment.environment.name": os.getenv("DEPLOYMENT_ENVIRONMENT", "development"),
+        })
     )
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
     trace.set_tracer_provider(provider)
@@ -58,22 +69,34 @@ def request_metrics(app) -> None:
     meter = metrics.get_meter("studypilot.http")
     request_count = meter.create_counter("studypilot.http.requests", unit="{request}")
     request_duration = meter.create_histogram("studypilot.http.duration", unit="s")
+    request_errors = meter.create_counter("studypilot.http.errors", unit="{request}")
+    requests_in_flight = meter.create_up_down_counter("studypilot.http.requests_in_flight", unit="{request}")
 
     @app.middleware("http")
     async def record_http_metrics(request, call_next):
         import time
 
         started = time.perf_counter()
-        response = await call_next(request)
-        route = request.scope.get("route")
-        attributes = {
-            "http.request.method": request.method,
-            "http.route": getattr(route, "path", "unmatched"),
-            "http.response.status_code": response.status_code,
-        }
-        request_count.add(1, attributes)
-        request_duration.record(time.perf_counter() - started, attributes)
-        logging.getLogger("studypilot").info(
-            "http_request method=%s route=%s status=%s", request.method, attributes["http.route"], response.status_code
-        )
-        return response
+        requests_in_flight.add(1)
+        status_code = 500
+        route_name = "unmatched"
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            route = request.scope.get("route")
+            route_name = getattr(route, "path", route_name)
+            attributes = {
+                "http.request.method": request.method,
+                "http.route": route_name,
+                "http.response.status_code": status_code,
+            }
+            request_count.add(1, attributes)
+            request_duration.record(time.perf_counter() - started, attributes)
+            if status_code >= 400:
+                request_errors.add(1, {"http.route": route_name, "http.response.status_code": status_code})
+            requests_in_flight.add(-1)
+            logging.getLogger("studypilot").info(
+                "http_request method=%s route=%s status=%s", request.method, route_name, status_code
+            )

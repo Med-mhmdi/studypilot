@@ -85,6 +85,6 @@ The workflow uses strict SSH host-key checking and deploys only after tests pass
 
 All account, assignment, project, chat, comment, activity, and notification APIs require a signed-in session. Private conversations are limited to their two participants, and can be started by accepted friends or current group classmates. Blocking revokes access to direct conversations. Username lookup returns names and handles only, never email addresses. `GET /health` reports service readiness only. Password reset by email, outbound invitation email, external calendar sync, and WebSocket push are not included in this MVP; chat refreshes by polling.
 
-## Task 2 observability — postponed until October 30
+## HW3 observability
 
-The pre-existing optional observability files are unchanged in this upgrade. Task 2 work remains postponed until October 30; the stack was not started or modified here. The existing local setup binds its dashboards to loopback; it is a learning stack, not hardened production monitoring. Do not publish its ports to the internet.
+The optional, isolated Docker Compose learning stack collects FastAPI metrics and traces and ships JSON application logs to Grafana, Prometheus, Jaeger, and Loki. It has its own app container and SQLite volume; it does not connect to or change the existing Dokku deployment. All host ports bind to loopback. See [the HW3 observability runbook](docs/HW3_OBSERVABILITY.md) for Dell setup, preflight checks, verification, and a short demo. The stack is for the assignment, not hardened production monitoring.
