@@ -32,10 +32,18 @@ def test_compose_and_dashboard_separate_demo_and_production():
     assert compose["services"]["app"]["environment"]["OTEL_SERVICE_NAME"] == "studypilot-demo"
 
     dashboard = json.loads((ROOT / "observability/grafana/dashboards/studypilot-overview.json").read_text())
-    service_variable = dashboard["templating"]["list"][0]
-    assert service_variable["name"] == "service_name"
-    assert service_variable["current"]["value"] == "studypilot-production"
-    assert all("service_name=\"$service_name\"" in panel["targets"][0]["expr"] for panel in dashboard["panels"] if panel["type"] == "timeseries")
+    assert "templating" not in dashboard
+    assert len(dashboard["panels"]) == 8
+    assert [panel["type"] for panel in dashboard["panels"][:4]] == ["stat"] * 4
+    prometheus_panels = [panel for panel in dashboard["panels"] if panel["datasource"]["uid"] == "prometheus"]
+    assert all(
+        'service_name="studypilot-production"' in target["expr"]
+        for panel in prometheus_panels
+        for target in panel["targets"]
+    )
+    log_panel = next(panel for panel in dashboard["panels"] if panel["type"] == "logs")
+    assert '{service="studypilot-production",source="dokku"}' in log_panel["targets"][0]["expr"]
+    assert "line_format" in log_panel["targets"][0]["expr"]
 
 
 def test_jaeger_memory_store_has_a_trace_limit():
