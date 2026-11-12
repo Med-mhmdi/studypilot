@@ -1,0 +1,14 @@
+replicaCount: 3
+image:
+  repository: studypilot-hw4
+  tag: "0.1.0"
+  pullPolicy: Never
+databaseSecret: studypilot-hw4-db-app
+databaseCASecret: studypilot-hw4-db-ca
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
