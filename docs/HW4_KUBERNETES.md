@@ -26,7 +26,7 @@ ss -ltn '( sport = :16550 or sport = :18080 )'
 k3d cluster list
 ```
 
-Allow at least 4 GiB of available RAM and 10 GiB of free disk for the demo, plus headroom for the existing workload. The three app pods and two database instances request 350 millicores and 576 MiB of RAM together. Their limits total 1.75 cores and 1,152 MiB before the operator, Kubernetes and a rolling upgrade. The k3s server container below has a 3 GiB memory cap. The two 2 GiB claims use local storage, which does not enforce per-volume quotas. If Dell is short on capacity or the loopback ports are already used, use another host or adjust the port values. Check usage during rehearsal.
+Allow at least 4 GiB of available RAM and 10 GiB of free disk for the demo, plus headroom for the existing workload. The three app pods and two database instances request 350 millicores and 576 MiB of RAM together. Their limits total 1.75 cores and 1,152 MiB before Kubernetes and a rolling upgrade. The CNPG operator requests an additional 100 millicores and 128 MiB, with limits of 300 millicores and 256 MiB. The k3s server container below has a 3 GiB memory cap. The two 2 GiB claims use local storage, which does not enforce per-volume quotas. If Dell is short on capacity or the loopback ports are already used, use another host or adjust the port values. Check usage during rehearsal.
 
 ## 2. Start the dedicated k3s cluster
 
@@ -67,7 +67,9 @@ ns=studypilot-hw4
 helm repo add cnpg https://cloudnative-pg.github.io/charts
 helm repo update cnpg
 helm upgrade --install cnpg cnpg/cloudnative-pg --version 0.29.1 \
-  --namespace cnpg-system --create-namespace --wait --timeout 5m
+  --namespace cnpg-system --create-namespace --wait --timeout 5m \
+  --set-string resources.requests.cpu=100m,resources.requests.memory=128Mi \
+  --set-string resources.limits.cpu=300m,resources.limits.memory=256Mi
 kubectl wait --for=condition=Established crd/clusters.postgresql.cnpg.io --timeout=120s
 kubectl -n cnpg-system rollout status deployment/cnpg-cloudnative-pg --timeout=180s
 
