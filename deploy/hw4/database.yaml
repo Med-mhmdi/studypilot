@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: studypilot-hw4-schema
+data:
+  init.sql: |
+    CREATE TABLE public.assignments (
+      id uuid PRIMARY KEY,
+      title text NOT NULL CHECK (char_length(title) BETWEEN 1 AND 160),
+      completed boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX assignments_recent ON public.assignments (created_at DESC, id);
+    ALTER TABLE public.assignments OWNER TO studypilot;
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: studypilot-hw4-db
+spec:
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.9-minimal-trixie
+  enableSuperuserAccess: false
+  enablePDB: true
+  bootstrap:
+    initdb:
+      database: studypilot
+      owner: studypilot
+      dataChecksums: true
+      postInitApplicationSQLRefs:
+        configMapRefs:
+          - name: studypilot-hw4-schema
+            key: init.sql
+  storage:
+    storageClass: local-path
+    size: 2Gi
+  affinity:
+    podAntiAffinityType: preferred
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
+  postgresql:
+    parameters:
+      shared_buffers: 64MB
+      max_connections: "40"

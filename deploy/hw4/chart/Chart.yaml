@@ -1,0 +1,6 @@
+apiVersion: v2
+name: studypilot-hw4
+description: StudyPilot Assignment Tracker for Kubernetes HW4
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
