@@ -147,6 +147,10 @@ def connect() -> Iterator[sqlite3.Connection]:
 def initialize() -> None:
     """Create new tables and add nullable task ownership without touching rows."""
     with connect() as con:
+        if os.getenv("DATABASE_URL"):
+            # Three fresh replicas may enter startup together; serialize additive
+            # schema setup so they don't race on CREATE/ALTER statements.
+            con.execute("SELECT pg_advisory_xact_lock(hashtext('studypilot_schema_init'))")
         con.execute("""CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT NOT NULL UNIQUE COLLATE NOCASE,
