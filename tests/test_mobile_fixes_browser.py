@@ -1,6 +1,7 @@
 import socket
 import threading
 import time
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -46,10 +47,11 @@ def test_mobile_message_actions_paste_and_task_touch_drag(tmp_path, monkeypatch)
                 assert api.post(f"{base}/api/projects/{project['id']}/messages", data={"body":f"History message {index}"}).status == 201
             response = api.post(f"{base}/api/projects/{project['id']}/messages", data={"body":"Hold this message for actions"})
             assert response.status == 201
-            task = api.post(f"{base}/api/tasks", data={"title":"Touch drag assignment","due_date":"2026-10-30","priority":"low"})
+            due_date = (date.today() + timedelta(days=30)).isoformat()
+            task = api.post(f"{base}/api/tasks", data={"title":"Touch drag assignment","due_date":due_date,"priority":"low"})
             assert task.status == 201
             for index in range(12):
-                assert api.post(f"{base}/api/tasks", data={"title":f"Scroll card {index}","due_date":"2026-10-30"}).status == 201
+                assert api.post(f"{base}/api/tasks", data={"title":f"Scroll card {index}","due_date":due_date}).status == 201
 
             page = context.new_page()
             page.goto(f"{base}/#/messages")
