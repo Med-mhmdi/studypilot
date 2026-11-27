@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "studypilot.name" . }}
+  labels: {{- include "studypilot.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: studypilot
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: studypilot
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      dnsConfig:
+        options:
+          - name: ndots
+            value: '1'
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: studypilot
+              app.kubernetes.io/instance: {{ .Release.Name }}
+      volumes:
+        - name: database-ca
+          secret:
+            secretName: {{ .Values.databaseCASecret | quote }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: tmp
+          emptyDir: {}
+      containers:
+        - name: studypilot
+          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: database-ca
+              mountPath: /etc/postgres-ca
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseSecret | quote }}
+                  key: uri
+            - name: PGSSLROOTCERT
+              value: /etc/postgres-ca/ca.crt
+            - name: PGSSLMODE
+              value: verify-full
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sessionSecret | quote }}
+                  key: SESSION_SECRET
+            - name: PHOTO_UPLOADS_ENABLED
+              value: "false"
+            - name: LOG_PATH
+              value: /tmp/studypilot.jsonl
+            - name: COOKIE_SECURE
+              value: "false"
+          ports:
+            - name: http
+              containerPort: 8000
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 3
+            failureThreshold: 40
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            timeoutSeconds: 5
+            periodSeconds: 5
+          resources: {{- toYaml .Values.resources | nindent 12 }}

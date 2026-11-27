@@ -1,0 +1,19 @@
+replicaCount: 3
+image:
+  repository: studypilot
+  tag: hw4
+  pullPolicy: IfNotPresent
+databaseSecret: studypilot-db-app
+databaseCASecret: studypilot-db-ca
+sessionSecret: studypilot-session
+service:
+  type: NodePort
+  port: 8000
+  nodePort: 30800
+resources:
+  requests:
+    cpu: 100m
+    memory: 160Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

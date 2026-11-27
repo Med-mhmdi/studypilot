@@ -74,7 +74,7 @@ def health():
         with db.connect() as connection:
             connection.execute("SELECT 1")
         return {"status": "ok"}
-    except sqlite3.Error as exc:
+    except Exception as exc:
         raise HTTPException(status_code=503, detail="database unavailable") from exc
 
 
@@ -245,6 +245,8 @@ def update_profile(body: ProfileUpdate, user: User):
 
 @app.post("/api/profile/photo")
 async def upload_profile_photo(user: User, photo: UploadFile = File(...), original_photo: UploadFile | None = File(default=None), crop_settings: str | None = Form(default=None)):
+    if os.getenv("PHOTO_UPLOADS_ENABLED", "true").lower() != "true":
+        raise HTTPException(status_code=503, detail="profile photo uploads are disabled in this deployment")
     max_photo_bytes = 8 * 1024 * 1024
     raw = await photo.read(max_photo_bytes + 1)
     await photo.close()
