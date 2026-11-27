@@ -1,0 +1,33 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: studypilot-db
+  namespace: hw4
+spec:
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.9-minimal-trixie
+  enableSuperuserAccess: false
+  enablePDB: true
+  bootstrap:
+    initdb:
+      database: studypilot
+      owner: studypilot
+      secret:
+        name: studypilot-db-app
+      dataChecksums: true
+  storage:
+    storageClass: local-path
+    size: 2Gi
+  affinity:
+    podAntiAffinityType: preferred
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
+  postgresql:
+    parameters:
+      shared_buffers: 64MB
+      max_connections: "60"
